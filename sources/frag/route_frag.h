@@ -13,7 +13,7 @@ typedef struct {
     uint8_t received_count;
     uint32_t start_ms;
     uint8_t **fragments;
-    uint8_t *frag_lens;
+    uint16_t *frag_lens;
     uint8_t active;
 } route_reasm_ctx_t;
 
@@ -39,7 +39,7 @@ typedef struct {
     route_reasm_ctx_t *slots;
     uint8_t *buf;                       // [max_payload]
     uint8_t **frag_ptrs;                // [max_reasm_slots * max_frags_per_msg]
-    uint8_t *frag_lens;                 // [max_reasm_slots * max_frags_per_msg]
+    uint16_t *frag_lens;                // [max_reasm_slots * max_frags_per_msg]
     uint8_t max_slots;
     uint32_t timeout_ms;
 } route_reasm_config_t;

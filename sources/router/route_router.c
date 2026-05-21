@@ -29,7 +29,7 @@ static int default_decode(const uint8_t *frame, uint16_t frame_len,
     uint16_t plen = frame_len - ROUTE_HEADER_SIZE;
     uint16_t crc_calc = route_crc16(frame, frame_len - 2);
     uint16_t crc_recv = ((uint16_t)frame[frame_len - 2] << 8) | frame[frame_len - 1];
-    if (crc_calc != crc_recv) return ROUTE_ERR_PARAM;
+    if (crc_calc != crc_recv) return ROUTE_ERR_CRC;
     hdr->src = frame[0];
     hdr->dst = frame[1];
     hdr->type = frame[2];
@@ -166,7 +166,7 @@ static int router_handle_frame(route_router_ctx_t *ctx, const uint8_t *frame,
 
     int rc = ctx->codec->decode(frame, frame_len, &hdr, &payload, &payload_len);
     if (rc != ROUTE_OK) {
-        if (ctx->stats) ctx->stats->crc_errors++;
+        if (ctx->stats && (rc == ROUTE_ERR_CRC)) ctx->stats->crc_errors++;
         return rc;
     }
 

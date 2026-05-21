@@ -221,7 +221,11 @@ void route_transaction_on_response(route_transaction_ctx_t *ctx, uint8_t src,
 // ============ Tick ============
 
 void route_transaction_tick(route_transaction_ctx_t *ctx, uint32_t now_ms) {
-    // 单次加锁扫描所有 slot，收集超时条目，锁外通知
+    // 收集超时条目，锁外统一通知，避免回调死锁
+    void (*timeout_cbs[8])(int, const uint8_t *, uint16_t, void *);
+    void *timeout_uds[8];
+    uint8_t timeout_count = 0;
+
     trans_lock(ctx);
     for (uint8_t i = 0; i < ctx->cfg_max_concurrent_trans; i++) {
         transaction_t *t = &ctx->trans_table[i];
@@ -233,23 +237,27 @@ void route_transaction_tick(route_transaction_ctx_t *ctx, uint32_t now_ms) {
         }
         if (t->timeout_ms == 0 || (int32_t)(now_ms - t->timeout_ms) < 0) continue;
 
-        // Timeout — 记录信息，设 IDLE，锁外通知
+        // Timeout
         if (ctx->stats) ctx->stats->trans_timeouts++;
 
         if (t->callback) {
-            void (*cb)(int, const uint8_t *, uint16_t, void *) = t->callback;
-            void *ud = t->user_data;
+            if (timeout_count < 8) {
+                timeout_cbs[timeout_count] = t->callback;
+                timeout_uds[timeout_count] = t->user_data;
+                timeout_count++;
+            }
             t->state = TRANS_STATE_IDLE;
-            trans_unlock(ctx);
-            cb(ROUTE_ERR_TIMEOUT, NULL, 0, ud);
-            trans_lock(ctx);  // 重新加锁继续扫描
         } else if (t->sync_sem) {
             t->result = ROUTE_ERR_TIMEOUT;
             ctx->os->sem_post(t->sync_sem);
-            // state 由 send_sync 在 sem_wait 返回后设为 IDLE
         } else {
             t->state = TRANS_STATE_IDLE;
         }
     }
     trans_unlock(ctx);
+
+    // 锁外回调
+    for (uint8_t i = 0; i < timeout_count; i++) {
+        timeout_cbs[i](ROUTE_ERR_TIMEOUT, NULL, 0, timeout_uds[i]);
+    }
 }

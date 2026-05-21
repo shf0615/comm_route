@@ -20,6 +20,7 @@ enum {
     ROUTE_ERR_REASM      = -5,
     ROUTE_ERR_PARAM      = -6,
     ROUTE_ERR_NO_PORT    = -7,
+    ROUTE_ERR_CRC        = -8,
 };
 
 // ============ Frame Types ============

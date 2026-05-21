@@ -247,7 +247,7 @@ static int frag_reassemble(route_frag_ctx_t *ctx, const route_header_t *hdr,
         slot->received_count = 0;
         slot->start_ms = ctx->current_ms;
         memset(slot->fragments, 0, ctx->cfg_max_frags_per_msg * sizeof(uint8_t *));
-        memset(slot->frag_lens, 0, ctx->cfg_max_frags_per_msg * sizeof(uint8_t));
+        memset(slot->frag_lens, 0, ctx->cfg_max_frags_per_msg * sizeof(uint16_t));
     }
 
     if (hdr->frag_idx >= slot->frag_total) return ROUTE_ERR_PARAM;
@@ -261,7 +261,7 @@ static int frag_reassemble(route_frag_ctx_t *ctx, const route_header_t *hdr,
     }
     memcpy(blk, payload, payload_len);
     slot->fragments[hdr->frag_idx] = blk;
-    slot->frag_lens[hdr->frag_idx] = (uint8_t)payload_len;
+    slot->frag_lens[hdr->frag_idx] = payload_len;
     slot->received_count++;
 
     if (slot->received_count == slot->frag_total) {
