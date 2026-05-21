@@ -1,4 +1,5 @@
 #include "route_transaction.h"
+#include "../frag/route_frag.h"
 #include <string.h>
 
 void route_transaction_set_lower_send(route_instance_t *inst, route_transaction_lower_send_t send_fn) {
@@ -46,7 +47,9 @@ int route_transaction_send_async(route_instance_t *inst, uint8_t dest,
 
     int rc = inst->transaction_lower_send ? inst->transaction_lower_send(inst, dest, (uint8_t)idx, seq, data, len) : ROUTE_ERR_PARAM;
     if (rc != ROUTE_OK) {
+        if (inst->os) inst->os->mutex_lock(inst->trans_mutex);
         t->state = TRANS_STATE_IDLE;
+        if (inst->os) inst->os->mutex_unlock(inst->trans_mutex);
         return rc;
     }
 
@@ -108,28 +111,7 @@ int route_transaction_send_sync(route_instance_t *inst, uint8_t dest,
 int route_transaction_reply(route_instance_t *inst, uint8_t dest, uint8_t trans_id,
                             const uint8_t *data, uint16_t len) {
     uint8_t seq = inst->seq_counter++;
-    uint8_t frag_total = (len + ROUTE_FRAG_SIZE - 1) / ROUTE_FRAG_SIZE;
-    if (frag_total == 0) frag_total = 1;
-
-    for (uint8_t i = 0; i < frag_total; i++) {
-        uint16_t offset = i * ROUTE_FRAG_SIZE;
-        uint16_t chunk = len - offset;
-        if (chunk > ROUTE_FRAG_SIZE) chunk = ROUTE_FRAG_SIZE;
-
-        route_header_t hdr = {
-            .src = inst->node_id,
-            .dst = dest,
-            .type = ROUTE_TYPE_RESPONSE,
-            .trans_id = trans_id,
-            .seq = seq,
-            .ttl = ROUTE_DEFAULT_TTL,
-            .frag_idx = i,
-            .frag_total = frag_total,
-        };
-        int rc = inst->frag_lower_send ? inst->frag_lower_send(inst, &hdr, &data[offset], chunk) : ROUTE_ERR_PARAM;
-        if (rc != ROUTE_OK) return rc;
-    }
-    return ROUTE_OK;
+    return route_frag_send_typed(inst, dest, trans_id, seq, ROUTE_TYPE_RESPONSE, data, len);
 }
 
 void route_transaction_on_response(route_instance_t *inst, uint8_t src,

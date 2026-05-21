@@ -192,6 +192,7 @@ int route_reply(route_instance_t *inst, uint8_t dest, uint8_t trans_id,
 // ============ 驱动 ============
 
 void route_tick(route_instance_t *inst, uint32_t now_ms) {
+    inst->current_ms = now_ms;
     route_frag_tick(inst, now_ms);
     if (inst->reliability) {
         inst->reliability->on_tick(inst, now_ms);

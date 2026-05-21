@@ -47,9 +47,17 @@ int route_router_parse_frame(const uint8_t *frame, uint16_t frame_len,
 }
 
 static int route_seen_check_and_add(route_instance_t *inst, uint8_t src_id, uint8_t seq, uint8_t trans_id, uint8_t type) {
+    uint32_t now = inst->current_ms;
+
+    // Expire old entries and check for duplicates
     for (uint8_t i = 0; i < ROUTE_SEEN_TABLE_SIZE; i++) {
-        if (inst->seen_table[i].valid &&
-            inst->seen_table[i].src_id == src_id &&
+        if (!inst->seen_table[i].valid) continue;
+        // Age out expired entries
+        if ((int32_t)(now - inst->seen_table[i].timestamp_ms) >= (int32_t)ROUTE_SEEN_EXPIRE_MS) {
+            inst->seen_table[i].valid = 0;
+            continue;
+        }
+        if (inst->seen_table[i].src_id == src_id &&
             inst->seen_table[i].seq == seq &&
             inst->seen_table[i].trans_id == trans_id) {
             return 1;
@@ -61,6 +69,7 @@ static int route_seen_check_and_add(route_instance_t *inst, uint8_t src_id, uint
         inst->seen_table[inst->seen_index].seq = seq;
         inst->seen_table[inst->seen_index].trans_id = trans_id;
         inst->seen_table[inst->seen_index].valid = 1;
+        inst->seen_table[inst->seen_index].timestamp_ms = now;
         inst->seen_index = (inst->seen_index + 1) % ROUTE_SEEN_TABLE_SIZE;
     }
     return 0;

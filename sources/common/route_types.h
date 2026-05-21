@@ -42,6 +42,9 @@
 #ifndef ROUTE_SEEN_TABLE_SIZE
 #define ROUTE_SEEN_TABLE_SIZE             16
 #endif
+#ifndef ROUTE_SEEN_EXPIRE_MS
+#define ROUTE_SEEN_EXPIRE_MS              10000
+#endif
 #ifndef ROUTE_REASM_TIMEOUT_MS
 #define ROUTE_REASM_TIMEOUT_MS            5000
 #endif
@@ -109,6 +112,7 @@ typedef struct {
     uint8_t seq;
     uint8_t trans_id;
     uint8_t valid;
+    uint32_t timestamp_ms;
 } route_seen_entry_t;
 
 // ============ Reassembly ============
@@ -241,6 +245,7 @@ struct route_instance {
     uint8_t route_count;
     route_seen_entry_t seen_table[ROUTE_SEEN_TABLE_SIZE];
     uint8_t seen_index;
+    uint32_t current_ms;  // updated by route_tick
 
     route_reasm_ctx_t reasm_slots[ROUTE_MAX_REASM_SLOTS];
 

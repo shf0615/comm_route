@@ -13,6 +13,11 @@ void route_frag_set_complete_cb(route_instance_t *inst, route_frag_complete_cb_t
 int route_frag_send(route_instance_t *inst, uint8_t dest, uint8_t trans_id,
                     uint8_t seq, const uint8_t *data, uint16_t len);
 
+// 分片发送（指定帧类型）
+int route_frag_send_typed(route_instance_t *inst, uint8_t dest, uint8_t trans_id,
+                          uint8_t seq, route_frame_type_t type,
+                          const uint8_t *data, uint16_t len);
+
 // 接收分片（由上层或 router deliver 回调调用）
 // Returns: 1=完成, 0=等待更多分片, <0=错误
 int route_frag_recv(route_instance_t *inst, const route_header_t *hdr,

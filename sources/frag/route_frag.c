@@ -10,8 +10,9 @@ void route_frag_set_complete_cb(route_instance_t *inst, route_frag_complete_cb_t
     inst->frag_complete_cb = cb;
 }
 
-int route_frag_send(route_instance_t *inst, uint8_t dest, uint8_t trans_id,
-                    uint8_t seq, const uint8_t *data, uint16_t len) {
+int route_frag_send_typed(route_instance_t *inst, uint8_t dest, uint8_t trans_id,
+                          uint8_t seq, route_frame_type_t type,
+                          const uint8_t *data, uint16_t len) {
     if (inst->frag_lower_send == NULL) return ROUTE_ERR_PARAM;
 
     uint8_t frag_total = (len + ROUTE_FRAG_SIZE - 1) / ROUTE_FRAG_SIZE;
@@ -25,7 +26,7 @@ int route_frag_send(route_instance_t *inst, uint8_t dest, uint8_t trans_id,
         route_header_t hdr = {
             .src = inst->node_id,
             .dst = dest,
-            .type = ROUTE_TYPE_REQUEST,
+            .type = (uint8_t)type,
             .trans_id = trans_id,
             .seq = seq,
             .ttl = ROUTE_DEFAULT_TTL,
@@ -37,6 +38,11 @@ int route_frag_send(route_instance_t *inst, uint8_t dest, uint8_t trans_id,
         if (rc != ROUTE_OK) return rc;
     }
     return ROUTE_OK;
+}
+
+int route_frag_send(route_instance_t *inst, uint8_t dest, uint8_t trans_id,
+                    uint8_t seq, const uint8_t *data, uint16_t len) {
+    return route_frag_send_typed(inst, dest, trans_id, seq, ROUTE_TYPE_REQUEST, data, len);
 }
 
 static route_reasm_ctx_t *find_reasm_slot(route_instance_t *inst, uint8_t src_id, uint8_t seq) {
