@@ -158,6 +158,7 @@ typedef struct {
 
 typedef enum {
     TRANS_STATE_IDLE = 0,
+    TRANS_STATE_SENDING,
     TRANS_STATE_WAITING,
 } trans_state_t;
 
@@ -266,8 +267,6 @@ struct route_instance {
     route_pool_t pool;
     uint8_t pool_storage[ROUTE_POOL_BLOCK_COUNT * ROUTE_BLOCK_SIZE];
 
-    // Reassembly output buffer (avoids large stack allocation)
-    uint8_t reasm_buf[ROUTE_MAX_PAYLOAD];
 };
 
 #endif // ROUTE_TYPES_H

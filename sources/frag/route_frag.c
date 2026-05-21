@@ -2,6 +2,9 @@
 #include "../common/route_pool.h"
 #include <string.h>
 
+// Shared reassembly buffer (safe: route_frag_input is synchronous, not reentrant)
+static uint8_t s_reasm_buf[ROUTE_MAX_PAYLOAD];
+
 void route_frag_set_lower_send(route_instance_t *inst, route_lower_send_t send_fn) {
     inst->frag_lower_send = send_fn;
 }
@@ -75,7 +78,7 @@ static void free_reasm_slot(route_instance_t *inst, route_reasm_ctx_t *slot) {
     slot->active = 0;
 }
 
-int route_frag_recv(route_instance_t *inst, const route_header_t *hdr,
+static int route_frag_recv(route_instance_t *inst, const route_header_t *hdr,
                     const uint8_t *payload, uint16_t payload_len,
                     uint8_t *out_buf, uint16_t *out_len, route_header_t *out_hdr) {
     // 安全检查：frag_total 不能为 0 或超过 fragments[] 数组容量
@@ -156,8 +159,8 @@ void route_frag_input(route_instance_t *inst, const route_header_t *hdr,
     uint16_t reasm_len = 0;
     route_header_t reasm_hdr;
 
-    int rc = route_frag_recv(inst, hdr, payload, payload_len, inst->reasm_buf, &reasm_len, &reasm_hdr);
+    int rc = route_frag_recv(inst, hdr, payload, payload_len, s_reasm_buf, &reasm_len, &reasm_hdr);
     if (rc == 1 && inst->frag_complete_cb) {
-        inst->frag_complete_cb(inst, &reasm_hdr, inst->reasm_buf, reasm_len);
+        inst->frag_complete_cb(inst, &reasm_hdr, s_reasm_buf, reasm_len);
     }
 }

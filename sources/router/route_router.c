@@ -3,7 +3,7 @@
 #include "../common/route_queue.h"
 #include <string.h>
 
-void route_router_build_frame(const route_header_t *hdr, const uint8_t *payload,
+static void route_router_build_frame(const route_header_t *hdr, const uint8_t *payload,
                               uint16_t payload_len, uint8_t *frame, uint16_t *frame_len) {
     frame[0] = hdr->src;
     frame[1] = hdr->dst;
@@ -22,7 +22,7 @@ void route_router_build_frame(const route_header_t *hdr, const uint8_t *payload,
     *frame_len = 10 + payload_len;
 }
 
-int route_router_parse_frame(const uint8_t *frame, uint16_t frame_len,
+static int route_router_parse_frame(const uint8_t *frame, uint16_t frame_len,
                              route_header_t *hdr, const uint8_t **payload, uint16_t *payload_len) {
     if (frame_len < ROUTE_HEADER_SIZE) {
         return ROUTE_ERR_PARAM;
@@ -94,7 +94,7 @@ static int route_send_to_port(route_instance_t *inst, uint8_t port_id,
     return ROUTE_ERR_NO_PORT;
 }
 
-int route_router_handle_frame(route_instance_t *inst, const uint8_t *frame,
+static int route_router_handle_frame(route_instance_t *inst, const uint8_t *frame,
                               uint16_t frame_len, uint8_t from_port,
                               route_header_t *out_hdr, const uint8_t **out_payload,
                               uint16_t *out_payload_len) {

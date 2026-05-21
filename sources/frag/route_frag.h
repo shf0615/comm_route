@@ -18,12 +18,6 @@ int route_frag_send_typed(route_instance_t *inst, uint8_t dest, uint8_t trans_id
                           uint8_t seq, route_frame_type_t type,
                           const uint8_t *data, uint16_t len);
 
-// 接收分片（由上层或 router deliver 回调调用）
-// Returns: 1=完成, 0=等待更多分片, <0=错误
-int route_frag_recv(route_instance_t *inst, const route_header_t *hdr,
-                    const uint8_t *payload, uint16_t payload_len,
-                    uint8_t *out_buf, uint16_t *out_len, route_header_t *out_hdr);
-
 // 作为 router_deliver_cb 的输入适配器（直接注册到 router）
 void route_frag_input(route_instance_t *inst, const route_header_t *hdr,
                       const uint8_t *payload, uint16_t payload_len);

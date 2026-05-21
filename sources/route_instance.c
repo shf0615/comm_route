@@ -10,6 +10,9 @@
 static route_instance_t instances[ROUTE_MAX_INSTANCES];
 static uint8_t instance_used[ROUTE_MAX_INSTANCES];
 
+// NOTE: route_create/route_destroy are NOT thread-safe.
+// Call them only during single-threaded initialization/shutdown.
+
 // ============ 内部层间适配回调 ============
 
 // Router deliver → 分流 ACK / Frag
@@ -105,7 +108,7 @@ void route_destroy(route_instance_t *inst) {
     }
     for (uint8_t i = 0; i < ROUTE_MAX_CONCURRENT_TRANSACTIONS; i++) {
         transaction_t *t = &inst->trans_table[i];
-        if (t->state == TRANS_STATE_WAITING) {
+        if (t->state == TRANS_STATE_WAITING || t->state == TRANS_STATE_SENDING) {
             if (t->callback) {
                 t->callback(ROUTE_ERR_TIMEOUT, NULL, 0, t->user_data);
             } else if (t->sync_sem && inst->os) {
