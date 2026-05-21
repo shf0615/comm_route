@@ -2,6 +2,7 @@
 #define ROUTE_TRANSACTION_H
 
 #include "../common/route_types.h"
+#include "../common/route_os.h"
 
 // ============ Transaction State ============
 
