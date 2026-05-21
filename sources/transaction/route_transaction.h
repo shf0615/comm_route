@@ -3,26 +3,86 @@
 
 #include "../common/route_types.h"
 
-// 设置下层发送函数（对接 route_frag_send）
-typedef int (*route_transaction_lower_send_t)(route_instance_t *inst, uint8_t dest,
-    uint8_t trans_id, uint8_t seq, const uint8_t *data, uint16_t len);
-void route_transaction_set_lower_send(route_instance_t *inst, route_transaction_lower_send_t send_fn);
+// ============ Transaction State ============
 
-int route_transaction_send_async(route_instance_t *inst, uint8_t dest,
+typedef enum {
+    TRANS_STATE_IDLE = 0,
+    TRANS_STATE_SENDING,
+    TRANS_STATE_WAITING,
+} trans_state_t;
+
+typedef struct {
+    uint8_t state;
+    uint8_t dest_id;
+    uint32_t timeout_ms;
+    uint32_t timeout_duration;
+    void (*callback)(int result, const uint8_t *data, uint16_t len, void *user_data);
+    void *user_data;
+    void *sync_sem;
+    int result;
+    uint8_t *resp_buf;
+    uint16_t *resp_len;
+    uint16_t resp_max_len;
+} transaction_t;
+
+// ============ Transaction Config ============
+
+typedef struct {
+    uint8_t max_concurrent_trans;
+    uint32_t default_timeout_ms;
+    const route_os_t *os;           // 需要 sync 时必须提供
+
+    transaction_t *trans_table;     // [max_concurrent_trans]
+
+    // 下行发送（对接 frag 或 router）
+    int (*lower_send)(void *ctx, uint8_t dest, uint8_t trans_id,
+                      uint8_t seq, route_frame_type_t type,
+                      const uint8_t *data, uint16_t len);
+    void *lower_send_ctx;
+
+    route_stats_t *stats;
+} route_transaction_config_t;
+
+// ============ Transaction Context ============
+
+typedef struct {
+    uint8_t cfg_max_concurrent_trans;
+    uint32_t cfg_default_timeout_ms;
+    const route_os_t *os;
+
+    transaction_t *trans_table;
+    uint8_t seq_counter;
+    void *mutex;
+
+    int (*lower_send)(void *ctx, uint8_t dest, uint8_t trans_id,
+                      uint8_t seq, route_frame_type_t type,
+                      const uint8_t *data, uint16_t len);
+    void *lower_send_ctx;
+
+    route_stats_t *stats;
+} route_transaction_ctx_t;
+
+// ============ API ============
+
+int route_transaction_init(route_transaction_ctx_t *ctx, const route_transaction_config_t *cfg);
+void route_transaction_deinit(route_transaction_ctx_t *ctx);
+
+int route_transaction_send_sync(route_transaction_ctx_t *ctx, uint8_t dest,
+                                const uint8_t *data, uint16_t len,
+                                uint8_t *resp_buf, uint16_t *resp_len, uint32_t timeout_ms);
+
+int route_transaction_send_async(route_transaction_ctx_t *ctx, uint8_t dest,
                                  const uint8_t *data, uint16_t len,
                                  void (*cb)(int result, const uint8_t *data, uint16_t len, void *user_data),
                                  void *user_data);
 
-int route_transaction_send_sync(route_instance_t *inst, uint8_t dest,
-                                const uint8_t *data, uint16_t len,
-                                uint8_t *resp_buf, uint16_t *resp_len, uint32_t timeout_ms);
-
-int route_transaction_reply(route_instance_t *inst, uint8_t dest, uint8_t trans_id,
+int route_transaction_reply(route_transaction_ctx_t *ctx, uint8_t dest, uint8_t trans_id,
                             const uint8_t *data, uint16_t len);
 
-void route_transaction_on_response(route_instance_t *inst, uint8_t src,
+// 从 frag complete_cb 调用
+void route_transaction_on_response(route_transaction_ctx_t *ctx, uint8_t src,
                                    uint8_t trans_id, const uint8_t *data, uint16_t len);
 
-void route_transaction_tick(route_instance_t *inst, uint32_t now_ms);
+void route_transaction_tick(route_transaction_ctx_t *ctx, uint32_t now_ms);
 
 #endif // ROUTE_TRANSACTION_H

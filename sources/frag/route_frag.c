@@ -1,90 +1,213 @@
 #include "route_frag.h"
-#include "../common/route_pool.h"
 #include <string.h>
 
-void route_frag_set_lower_send(route_instance_t *inst, route_lower_send_t send_fn) {
-    inst->frag_lower_send = send_fn;
-}
+// ============ Init ============
 
-void route_frag_set_complete_cb(route_instance_t *inst, route_frag_complete_cb_t cb) {
-    inst->frag_complete_cb = cb;
-}
+int route_frag_init(route_frag_ctx_t *ctx, const route_frag_config_t *cfg) {
+    if (ctx == NULL || cfg == NULL) return ROUTE_ERR_PARAM;
+    if (cfg->frag_size == 0 || cfg->max_payload == 0) return ROUTE_ERR_PARAM;
+    if (cfg->max_frags_per_msg == 0 || cfg->max_reasm_slots == 0) return ROUTE_ERR_PARAM;
+    if (cfg->reasm_slots == NULL || cfg->reasm_buf == NULL) return ROUTE_ERR_PARAM;
+    if (cfg->reasm_frag_ptrs == NULL || cfg->reasm_frag_lens == NULL) return ROUTE_ERR_PARAM;
+    if (cfg->pool_free_list == NULL || cfg->pool_storage == NULL) return ROUTE_ERR_PARAM;
 
-int route_frag_send_typed(route_instance_t *inst, uint8_t dest, uint8_t trans_id,
-                          uint8_t seq, route_frame_type_t type,
-                          const uint8_t *data, uint16_t len) {
-    if (inst->frag_lower_send == NULL) return ROUTE_ERR_PARAM;
+    memset(ctx, 0, sizeof(*ctx));
+    ctx->node_id = cfg->node_id;
+    ctx->cfg_frag_size = cfg->frag_size;
+    ctx->cfg_max_payload = cfg->max_payload;
+    ctx->cfg_max_frags_per_msg = cfg->max_frags_per_msg;
+    ctx->cfg_max_reasm_slots = cfg->max_reasm_slots;
+    ctx->cfg_reasm_timeout_ms = cfg->reasm_timeout_ms;
+    ctx->cfg_default_ttl = cfg->default_ttl;
+    ctx->reasm_slots = cfg->reasm_slots;
+    ctx->reasm_buf = cfg->reasm_buf;
+    ctx->stats = cfg->stats;
 
-    uint8_t frag_total = (len + inst->cfg_frag_size - 1) / inst->cfg_frag_size;
-    if (frag_total == 0) frag_total = 1;
-
-    for (uint8_t i = 0; i < frag_total; i++) {
-        uint16_t offset = i * inst->cfg_frag_size;
-        uint16_t chunk = len - offset;
-        if (chunk > inst->cfg_frag_size) chunk = inst->cfg_frag_size;
-
-        route_header_t hdr = {
-            .src = inst->node_id,
-            .dst = dest,
-            .type = type,
-            .trans_id = trans_id,
-            .seq = seq,
-            .ttl = inst->cfg_default_ttl,
-            .frag_idx = i,
-            .frag_total = frag_total,
-        };
-
-        int rc = inst->frag_lower_send(inst, &hdr, &data[offset], chunk);
-        if (rc != ROUTE_OK) return rc;
-        inst->stats.tx_packets++;
-        inst->stats.tx_bytes += ROUTE_HEADER_SIZE + chunk;
+    // Init reassembly slots
+    for (uint8_t i = 0; i < cfg->max_reasm_slots; i++) {
+        ctx->reasm_slots[i].active = 0;
+        ctx->reasm_slots[i].fragments = &cfg->reasm_frag_ptrs[i * cfg->max_frags_per_msg];
+        ctx->reasm_slots[i].frag_lens = &cfg->reasm_frag_lens[i * cfg->max_frags_per_msg];
     }
+
+    // Init pool
+    uint16_t block_size = ROUTE_HEADER_SIZE + cfg->frag_size;
+    route_pool_init(&ctx->pool, cfg->pool_free_list, cfg->pool_storage,
+                    cfg->pool_block_count, block_size);
+
+    // Reliability (optional)
+    if (cfg->max_pending_acks > 0 && cfg->pending_acks != NULL && cfg->pending_ack_data != NULL) {
+        ctx->reliability_enabled = 1;
+        ctx->pending_acks = cfg->pending_acks;
+        ctx->cfg_max_pending_acks = cfg->max_pending_acks;
+        ctx->cfg_ack_timeout_ms = cfg->ack_timeout_ms;
+        ctx->cfg_ack_retry_max = cfg->ack_retry_max;
+        for (uint8_t i = 0; i < cfg->max_pending_acks; i++) {
+            ctx->pending_acks[i].active = 0;
+            ctx->pending_acks[i].data = &cfg->pending_ack_data[i * cfg->frag_size];
+        }
+    }
+
     return ROUTE_OK;
 }
 
-int route_frag_send(route_instance_t *inst, uint8_t dest, uint8_t trans_id,
-                    uint8_t seq, const uint8_t *data, uint16_t len) {
-    return route_frag_send_typed(inst, dest, trans_id, seq, ROUTE_TYPE_REQUEST, data, len);
+void route_frag_deinit(route_frag_ctx_t *ctx) {
+    if (ctx == NULL) return;
+    // Free pool blocks held by active reasm slots
+    for (uint8_t i = 0; i < ctx->cfg_max_reasm_slots; i++) {
+        if (ctx->reasm_slots[i].active) {
+            for (uint8_t j = 0; j < ctx->reasm_slots[i].frag_total; j++) {
+                if (ctx->reasm_slots[i].fragments[j] != NULL) {
+                    route_pool_free(&ctx->pool, ctx->reasm_slots[i].fragments[j]);
+                    ctx->reasm_slots[i].fragments[j] = NULL;
+                }
+            }
+            ctx->reasm_slots[i].active = 0;
+        }
+    }
 }
 
-static route_reasm_ctx_t *find_reasm_slot(route_instance_t *inst, uint8_t src_id, uint8_t seq) {
-    for (uint8_t i = 0; i < inst->cfg_max_reasm_slots; i++) {
-        if (inst->reasm_slots[i].active &&
-            inst->reasm_slots[i].src_id == src_id &&
-            inst->reasm_slots[i].seq == seq) {
-            return &inst->reasm_slots[i];
+// ============ Callbacks ============
+
+void route_frag_set_lower_send(route_frag_ctx_t *ctx,
+    int (*send)(void *c, const route_header_t *hdr, const uint8_t *payload, uint16_t len),
+    void *send_ctx) {
+    ctx->lower_send = send;
+    ctx->lower_send_ctx = send_ctx;
+}
+
+void route_frag_set_complete_cb(route_frag_ctx_t *ctx,
+    void (*cb)(void *c, const route_header_t *hdr, const uint8_t *data, uint16_t len),
+    void *cb_ctx) {
+    ctx->complete_cb = cb;
+    ctx->complete_ctx = cb_ctx;
+}
+
+// ============ Reliability Internal ============
+
+static int reliability_register(route_frag_ctx_t *ctx, uint8_t dest, uint8_t seq,
+                                uint8_t frag_idx, uint8_t frag_total, uint8_t type,
+                                uint8_t trans_id, const uint8_t *data, uint16_t len) {
+    if (!ctx->reliability_enabled) return ROUTE_OK;
+    if (len > ctx->cfg_frag_size) return ROUTE_ERR_PARAM;
+    for (uint8_t i = 0; i < ctx->cfg_max_pending_acks; i++) {
+        if (!ctx->pending_acks[i].active) {
+            route_pending_ack_t *pa = &ctx->pending_acks[i];
+            pa->active = 1;
+            pa->dest_id = dest;
+            pa->seq = seq;
+            pa->frag_idx = frag_idx;
+            pa->frag_total = frag_total;
+            pa->trans_id = trans_id;
+            pa->type = type;
+            pa->retry_count = 0;
+            pa->next_retry_ms = 0;
+            if (data && len > 0) memcpy(pa->data, data, len);
+            pa->len = len;
+            return ROUTE_OK;
+        }
+    }
+    return ROUTE_ERR_FULL;
+}
+
+static void reliability_on_ack(route_frag_ctx_t *ctx, uint8_t src, uint8_t seq) {
+    if (!ctx->reliability_enabled) return;
+    for (uint8_t i = 0; i < ctx->cfg_max_pending_acks; i++) {
+        if (ctx->pending_acks[i].active &&
+            ctx->pending_acks[i].dest_id == src &&
+            ctx->pending_acks[i].seq == seq) {
+            ctx->pending_acks[i].active = 0;
+        }
+    }
+}
+
+static int reliability_send_ack(route_frag_ctx_t *ctx, uint8_t dest, uint8_t seq, uint8_t frag_idx) {
+    if (ctx->lower_send == NULL) return ROUTE_ERR_PARAM;
+    route_header_t hdr = {
+        .src = ctx->node_id,
+        .dst = dest,
+        .type = ROUTE_TYPE_ACK,
+        .trans_id = 0,
+        .seq = seq,
+        .ttl = ctx->cfg_default_ttl,
+        .frag_idx = frag_idx,
+        .frag_total = 1,
+    };
+    return ctx->lower_send(ctx->lower_send_ctx, &hdr, NULL, 0);
+}
+
+static void reliability_tick(route_frag_ctx_t *ctx, uint32_t now_ms) {
+    if (!ctx->reliability_enabled) return;
+    for (uint8_t i = 0; i < ctx->cfg_max_pending_acks; i++) {
+        if (!ctx->pending_acks[i].active) continue;
+        route_pending_ack_t *pa = &ctx->pending_acks[i];
+        if (pa->next_retry_ms == 0) {
+            pa->next_retry_ms = now_ms + ctx->cfg_ack_timeout_ms;
+            continue;
+        }
+        if ((int32_t)(now_ms - pa->next_retry_ms) < 0) continue;
+        if (pa->retry_count >= ctx->cfg_ack_retry_max) {
+            pa->active = 0;
+            continue;
+        }
+        // Retransmit
+        if (ctx->lower_send) {
+            route_header_t hdr = {
+                .src = ctx->node_id,
+                .dst = pa->dest_id,
+                .type = pa->type,
+                .trans_id = pa->trans_id,
+                .seq = pa->seq,
+                .ttl = ctx->cfg_default_ttl,
+                .frag_idx = pa->frag_idx,
+                .frag_total = pa->frag_total,
+            };
+            ctx->lower_send(ctx->lower_send_ctx, &hdr, pa->data, pa->len);
+            if (ctx->stats) ctx->stats->retransmissions++;
+        }
+        pa->retry_count++;
+        pa->next_retry_ms = now_ms + ctx->cfg_ack_timeout_ms;
+    }
+}
+
+// ============ Reassembly Internal ============
+
+static route_reasm_ctx_t *find_reasm_slot(route_frag_ctx_t *ctx, uint8_t src_id, uint8_t seq) {
+    for (uint8_t i = 0; i < ctx->cfg_max_reasm_slots; i++) {
+        if (ctx->reasm_slots[i].active &&
+            ctx->reasm_slots[i].src_id == src_id &&
+            ctx->reasm_slots[i].seq == seq) {
+            return &ctx->reasm_slots[i];
         }
     }
     return NULL;
 }
 
-static route_reasm_ctx_t *alloc_reasm_slot(route_instance_t *inst) {
-    for (uint8_t i = 0; i < inst->cfg_max_reasm_slots; i++) {
-        if (!inst->reasm_slots[i].active) {
-            return &inst->reasm_slots[i];
-        }
+static route_reasm_ctx_t *alloc_reasm_slot(route_frag_ctx_t *ctx) {
+    for (uint8_t i = 0; i < ctx->cfg_max_reasm_slots; i++) {
+        if (!ctx->reasm_slots[i].active) return &ctx->reasm_slots[i];
     }
     return NULL;
 }
 
-static void free_reasm_slot(route_instance_t *inst, route_reasm_ctx_t *slot) {
+static void free_reasm_slot(route_frag_ctx_t *ctx, route_reasm_ctx_t *slot) {
     for (uint8_t i = 0; i < slot->frag_total; i++) {
         if (slot->fragments[i] != NULL) {
-            route_pool_free(&inst->pool, slot->fragments[i]);
+            route_pool_free(&ctx->pool, slot->fragments[i]);
             slot->fragments[i] = NULL;
         }
     }
     slot->active = 0;
 }
 
-static int route_frag_recv(route_instance_t *inst, const route_header_t *hdr,
-                    const uint8_t *payload, uint16_t payload_len,
-                    uint8_t *out_buf, uint16_t *out_len, route_header_t *out_hdr) {
-    // 安全检查：frag_total 不能为 0 或超过 fragments[] 数组容量
-    if (hdr->frag_total == 0 || hdr->frag_total > inst->cfg_max_frags_per_msg) return ROUTE_ERR_PARAM;
+static int frag_reassemble(route_frag_ctx_t *ctx, const route_header_t *hdr,
+                           const uint8_t *payload, uint16_t payload_len,
+                           uint8_t *out_buf, uint16_t *out_len, route_header_t *out_hdr) {
+    if (hdr->frag_total == 0 || hdr->frag_total > ctx->cfg_max_frags_per_msg) return ROUTE_ERR_PARAM;
 
+    // 单帧：直接返回
     if (hdr->frag_total == 1) {
-        if (payload_len > inst->cfg_max_payload) return ROUTE_ERR_PARAM;
+        if (payload_len > ctx->cfg_max_payload) return ROUTE_ERR_PARAM;
         if (payload_len > 0) {
             if (payload == NULL) return ROUTE_ERR_PARAM;
             memcpy(out_buf, payload, payload_len);
@@ -94,11 +217,11 @@ static int route_frag_recv(route_instance_t *inst, const route_header_t *hdr,
         return 1;
     }
 
-    route_reasm_ctx_t *slot = find_reasm_slot(inst, hdr->src, hdr->seq);
+    route_reasm_ctx_t *slot = find_reasm_slot(ctx, hdr->src, hdr->seq);
     if (slot == NULL) {
-        slot = alloc_reasm_slot(inst);
+        slot = alloc_reasm_slot(ctx);
         if (slot == NULL) {
-            inst->stats.drop_no_mem++;
+            if (ctx->stats) ctx->stats->drop_no_mem++;
             return ROUTE_ERR_FULL;
         }
         slot->active = 1;
@@ -106,18 +229,18 @@ static int route_frag_recv(route_instance_t *inst, const route_header_t *hdr,
         slot->seq = hdr->seq;
         slot->frag_total = hdr->frag_total;
         slot->received_count = 0;
-        slot->start_ms = inst->current_ms;
-        memset(slot->fragments, 0, inst->cfg_max_frags_per_msg * sizeof(uint8_t *));
-        memset(slot->frag_lens, 0, inst->cfg_max_frags_per_msg * sizeof(uint8_t));
+        slot->start_ms = ctx->current_ms;
+        memset(slot->fragments, 0, ctx->cfg_max_frags_per_msg * sizeof(uint8_t *));
+        memset(slot->frag_lens, 0, ctx->cfg_max_frags_per_msg * sizeof(uint8_t));
     }
 
     if (hdr->frag_idx >= slot->frag_total) return ROUTE_ERR_PARAM;
-    if (payload_len > inst->cfg_frag_size) return ROUTE_ERR_PARAM;
-    if (slot->fragments[hdr->frag_idx] != NULL) return 0;
+    if (payload_len > ctx->cfg_frag_size) return ROUTE_ERR_PARAM;
+    if (slot->fragments[hdr->frag_idx] != NULL) return 0;  // duplicate fragment
 
-    uint8_t *blk = route_pool_alloc(&inst->pool);
+    uint8_t *blk = route_pool_alloc(&ctx->pool);
     if (blk == NULL) {
-        inst->stats.drop_no_mem++;
+        if (ctx->stats) ctx->stats->drop_no_mem++;
         return ROUTE_ERR_NO_MEM;
     }
     memcpy(blk, payload, payload_len);
@@ -128,9 +251,8 @@ static int route_frag_recv(route_instance_t *inst, const route_header_t *hdr,
     if (slot->received_count == slot->frag_total) {
         *out_len = 0;
         for (uint8_t i = 0; i < slot->frag_total; i++) {
-            // 安全检查：防止重组数据溢出 out_buf
-            if (*out_len + slot->frag_lens[i] > inst->cfg_max_payload) {
-                free_reasm_slot(inst, slot);
+            if (*out_len + slot->frag_lens[i] > ctx->cfg_max_payload) {
+                free_reasm_slot(ctx, slot);
                 return ROUTE_ERR_REASM;
             }
             memcpy(out_buf + *out_len, slot->fragments[i], slot->frag_lens[i]);
@@ -139,32 +261,82 @@ static int route_frag_recv(route_instance_t *inst, const route_header_t *hdr,
         *out_hdr = *hdr;
         out_hdr->frag_idx = 0;
         out_hdr->frag_total = 1;
-        free_reasm_slot(inst, slot);
+        free_reasm_slot(ctx, slot);
         return 1;
     }
     return 0;
 }
 
-void route_frag_tick(route_instance_t *inst, uint32_t now_ms) {
-    for (uint8_t i = 0; i < inst->cfg_max_reasm_slots; i++) {
-        if (inst->reasm_slots[i].active) {
-            if ((int32_t)(now_ms - inst->reasm_slots[i].start_ms) >= (int32_t)inst->cfg_reasm_timeout_ms) {
-                free_reasm_slot(inst, &inst->reasm_slots[i]);
-                inst->stats.reasm_timeouts++;
-            }
-        }
+// ============ Public API ============
+
+int route_frag_send(route_frag_ctx_t *ctx, uint8_t dest, uint8_t trans_id,
+                    uint8_t seq, route_frame_type_t type,
+                    const uint8_t *data, uint16_t len) {
+    if (ctx->lower_send == NULL) return ROUTE_ERR_PARAM;
+
+    uint8_t frag_total = (len + ctx->cfg_frag_size - 1) / ctx->cfg_frag_size;
+    if (frag_total == 0) frag_total = 1;
+
+    for (uint8_t i = 0; i < frag_total; i++) {
+        uint16_t offset = i * ctx->cfg_frag_size;
+        uint16_t chunk = len - offset;
+        if (chunk > ctx->cfg_frag_size) chunk = ctx->cfg_frag_size;
+
+        route_header_t hdr = {
+            .src = ctx->node_id,
+            .dst = dest,
+            .type = type,
+            .trans_id = trans_id,
+            .seq = seq,
+            .ttl = ctx->cfg_default_ttl,
+            .frag_idx = i,
+            .frag_total = frag_total,
+        };
+
+        int rc = ctx->lower_send(ctx->lower_send_ctx, &hdr, &data[offset], chunk);
+        if (rc != ROUTE_OK) return rc;
+        if (ctx->stats) { ctx->stats->tx_packets++; ctx->stats->tx_bytes += ROUTE_HEADER_SIZE + chunk; }
+
+        // 注册 reliability 跟踪
+        reliability_register(ctx, dest, seq, i, frag_total, type, trans_id, &data[offset], chunk);
+    }
+    return ROUTE_OK;
+}
+
+void route_frag_input(route_frag_ctx_t *ctx, const route_header_t *hdr,
+                      const uint8_t *payload, uint16_t payload_len) {
+    // ACK 帧 → 清除对应 pending_ack
+    if (hdr->type == ROUTE_TYPE_ACK) {
+        reliability_on_ack(ctx, hdr->src, hdr->seq);
+        return;
+    }
+
+    // 数据帧 → 逐片发 ACK
+    if (ctx->reliability_enabled) {
+        reliability_send_ack(ctx, hdr->src, hdr->seq, hdr->frag_idx);
+    }
+
+    // 重组
+    uint16_t reasm_len = 0;
+    route_header_t reasm_hdr;
+    int rc = frag_reassemble(ctx, hdr, payload, payload_len,
+                             ctx->reasm_buf, &reasm_len, &reasm_hdr);
+    if (rc == 1 && ctx->complete_cb) {
+        ctx->complete_cb(ctx->complete_ctx, &reasm_hdr, ctx->reasm_buf, reasm_len);
     }
 }
 
-void route_frag_input(route_instance_t *inst, const route_header_t *hdr,
-                      const uint8_t *payload, uint16_t payload_len) {
-    uint16_t reasm_len = 0;
-    route_header_t reasm_hdr;
-
-    // 使用 per-instance buffer 代替 static 全局 buffer，避免多实例数据竞争
-    int rc = route_frag_recv(inst, hdr, payload, payload_len,
-                             inst->reasm_buf, &reasm_len, &reasm_hdr);
-    if (rc == 1 && inst->frag_complete_cb) {
-        inst->frag_complete_cb(inst, &reasm_hdr, inst->reasm_buf, reasm_len);
+void route_frag_tick(route_frag_ctx_t *ctx, uint32_t now_ms) {
+    ctx->current_ms = now_ms;
+    // Reassembly timeout
+    for (uint8_t i = 0; i < ctx->cfg_max_reasm_slots; i++) {
+        if (ctx->reasm_slots[i].active) {
+            if ((int32_t)(now_ms - ctx->reasm_slots[i].start_ms) >= (int32_t)ctx->cfg_reasm_timeout_ms) {
+                free_reasm_slot(ctx, &ctx->reasm_slots[i]);
+                if (ctx->stats) ctx->stats->reasm_timeouts++;
+            }
+        }
     }
+    // Reliability retransmit timeout
+    reliability_tick(ctx, now_ms);
 }
