@@ -51,6 +51,9 @@
 #ifndef ROUTE_RECV_QUEUE_SIZE
 #define ROUTE_RECV_QUEUE_SIZE             16
 #endif
+#ifndef ROUTE_MAX_FRAGS_PER_MSG
+#define ROUTE_MAX_FRAGS_PER_MSG           ((ROUTE_MAX_PAYLOAD / ROUTE_FRAG_SIZE) + 1)
+#endif
 
 // ============ Constants ============
 
@@ -84,7 +87,7 @@ typedef enum {
 typedef struct {
     uint8_t src;
     uint8_t dst;
-    uint8_t type;
+    route_frame_type_t type;
     uint8_t trans_id;
     uint8_t seq;
     uint8_t ttl;
@@ -125,8 +128,8 @@ typedef struct {
     uint8_t frag_total;
     uint8_t received_count;
     uint32_t start_ms;
-    uint8_t *fragments[ROUTE_MAX_PAYLOAD / ROUTE_FRAG_SIZE + 1];
-    uint8_t frag_lens[ROUTE_MAX_PAYLOAD / ROUTE_FRAG_SIZE + 1];
+    uint8_t *fragments[ROUTE_MAX_FRAGS_PER_MSG];
+    uint8_t frag_lens[ROUTE_MAX_FRAGS_PER_MSG];
     uint8_t active;
 } route_reasm_ctx_t;
 
@@ -213,6 +216,24 @@ typedef struct {
     uint8_t count;
 } route_recv_queue_t;
 
+// ============ Statistics ============
+
+typedef struct {
+    uint32_t tx_packets;
+    uint32_t rx_packets;
+    uint32_t tx_bytes;
+    uint32_t rx_bytes;
+    uint32_t crc_errors;
+    uint32_t drop_no_route;
+    uint32_t drop_ttl;
+    uint32_t drop_duplicate;
+    uint32_t drop_queue_full;
+    uint32_t drop_no_mem;
+    uint32_t retransmissions;
+    uint32_t reasm_timeouts;
+    uint32_t trans_timeouts;
+} route_stats_t;
+
 // ============ Layer Callback Types ============
 
 // Router 层：帧送达本机时调用
@@ -231,7 +252,8 @@ typedef int (*route_lower_send_t)(route_instance_t *inst,
 
 struct route_instance {
     uint8_t node_id;
-    uint8_t seq_counter;
+    uint8_t seq_counter;       // transaction/frag seq
+    uint8_t bcast_seq_counter; // broadcast 独立 seq，避免与 transaction 共用
 
     const route_os_t *os;
 
@@ -245,6 +267,7 @@ struct route_instance {
     uint32_t current_ms;  // updated by route_tick
 
     route_reasm_ctx_t reasm_slots[ROUTE_MAX_REASM_SLOTS];
+    uint8_t reasm_buf[ROUTE_MAX_PAYLOAD];  // per-instance reassembly buffer
 
     const reliability_strategy_t *reliability;
     route_pending_ack_t pending_acks[ROUTE_MAX_CONCURRENT_TRANSACTIONS];
@@ -267,6 +290,7 @@ struct route_instance {
     route_pool_t pool;
     uint8_t pool_storage[ROUTE_POOL_BLOCK_COUNT * ROUTE_BLOCK_SIZE];
 
+    route_stats_t stats;
 };
 
 #endif // ROUTE_TYPES_H

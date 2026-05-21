@@ -78,7 +78,6 @@ route_instance_t *route_create(uint8_t node_id, const route_config_t *config) {
             route_frag_set_complete_cb(inst, internal_frag_complete);
             route_reliability_set_lower_send(inst, route_router_send);
             route_transaction_set_lower_send(inst, internal_transaction_send);
-            // transaction reply 也通过 frag_lower_send（即 route_router_send）
 
             return inst;
         }
@@ -177,7 +176,7 @@ int route_broadcast(route_instance_t *inst, const uint8_t *data, uint16_t len,
                     void *user_data) {
     (void)cb; (void)user_data;
     if (len > ROUTE_FRAG_SIZE) return ROUTE_ERR_PARAM;  // 广播不支持分片
-    uint8_t seq = inst->seq_counter++;
+    uint8_t seq = inst->bcast_seq_counter++;  // 使用独立的广播 seq 计数器
     route_header_t hdr = {
         .src = inst->node_id,
         .dst = ROUTE_BROADCAST_ADDR,
@@ -188,7 +187,12 @@ int route_broadcast(route_instance_t *inst, const uint8_t *data, uint16_t len,
         .frag_idx = 0,
         .frag_total = 1,
     };
-    return route_router_send(inst, &hdr, data, len);
+    int rc = route_router_send(inst, &hdr, data, len);
+    if (rc == ROUTE_OK) {
+        inst->stats.tx_packets++;
+        inst->stats.tx_bytes += len;
+    }
+    return rc;
 }
 
 int route_reply(route_instance_t *inst, uint8_t dest, uint8_t trans_id,
@@ -209,4 +213,14 @@ void route_tick(route_instance_t *inst, uint32_t now_ms) {
 
 void route_poll(route_instance_t *inst) {
     route_router_poll(inst);
+}
+
+// ============ 统计 ============
+
+const route_stats_t *route_get_stats(const route_instance_t *inst) {
+    return &inst->stats;
+}
+
+void route_reset_stats(route_instance_t *inst) {
+    memset(&inst->stats, 0, sizeof(inst->stats));
 }

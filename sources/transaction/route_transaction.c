@@ -201,6 +201,7 @@ void route_transaction_tick(route_instance_t *inst, uint32_t now_ms) {
         }
 
         // Timeout
+        inst->stats.trans_timeouts++;
         if (t->callback) {
             void (*cb)(int, const uint8_t *, uint16_t, void *) = t->callback;
             void *ud = t->user_data;

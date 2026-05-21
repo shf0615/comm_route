@@ -2,9 +2,6 @@
 #include "../common/route_pool.h"
 #include <string.h>
 
-// Shared reassembly buffer (safe: route_frag_input is synchronous, not reentrant)
-static uint8_t s_reasm_buf[ROUTE_MAX_PAYLOAD];
-
 void route_frag_set_lower_send(route_instance_t *inst, route_lower_send_t send_fn) {
     inst->frag_lower_send = send_fn;
 }
@@ -29,7 +26,7 @@ int route_frag_send_typed(route_instance_t *inst, uint8_t dest, uint8_t trans_id
         route_header_t hdr = {
             .src = inst->node_id,
             .dst = dest,
-            .type = (uint8_t)type,
+            .type = type,
             .trans_id = trans_id,
             .seq = seq,
             .ttl = ROUTE_DEFAULT_TTL,
@@ -40,6 +37,8 @@ int route_frag_send_typed(route_instance_t *inst, uint8_t dest, uint8_t trans_id
         int rc = inst->frag_lower_send(inst, &hdr, &data[offset], chunk);
         if (rc != ROUTE_OK) return rc;
     }
+    inst->stats.tx_packets++;
+    inst->stats.tx_bytes += len;
     return ROUTE_OK;
 }
 
@@ -82,8 +81,7 @@ static int route_frag_recv(route_instance_t *inst, const route_header_t *hdr,
                     const uint8_t *payload, uint16_t payload_len,
                     uint8_t *out_buf, uint16_t *out_len, route_header_t *out_hdr) {
     // 安全检查：frag_total 不能为 0 或超过 fragments[] 数组容量
-    uint8_t max_frags = (ROUTE_MAX_PAYLOAD / ROUTE_FRAG_SIZE) + 1;
-    if (hdr->frag_total == 0 || hdr->frag_total > max_frags) return ROUTE_ERR_PARAM;
+    if (hdr->frag_total == 0 || hdr->frag_total > ROUTE_MAX_FRAGS_PER_MSG) return ROUTE_ERR_PARAM;
 
     if (hdr->frag_total == 1) {
         if (payload_len > ROUTE_MAX_PAYLOAD) return ROUTE_ERR_PARAM;
@@ -99,7 +97,10 @@ static int route_frag_recv(route_instance_t *inst, const route_header_t *hdr,
     route_reasm_ctx_t *slot = find_reasm_slot(inst, hdr->src, hdr->seq);
     if (slot == NULL) {
         slot = alloc_reasm_slot(inst);
-        if (slot == NULL) return ROUTE_ERR_FULL;
+        if (slot == NULL) {
+            inst->stats.drop_no_mem++;
+            return ROUTE_ERR_FULL;
+        }
         slot->active = 1;
         slot->src_id = hdr->src;
         slot->seq = hdr->seq;
@@ -115,7 +116,10 @@ static int route_frag_recv(route_instance_t *inst, const route_header_t *hdr,
     if (slot->fragments[hdr->frag_idx] != NULL) return 0;
 
     uint8_t *blk = route_pool_alloc(&inst->pool);
-    if (blk == NULL) return ROUTE_ERR_NO_MEM;
+    if (blk == NULL) {
+        inst->stats.drop_no_mem++;
+        return ROUTE_ERR_NO_MEM;
+    }
     memcpy(blk, payload, payload_len);
     slot->fragments[hdr->frag_idx] = blk;
     slot->frag_lens[hdr->frag_idx] = (uint8_t)payload_len;
@@ -149,6 +153,7 @@ void route_frag_tick(route_instance_t *inst, uint32_t now_ms) {
             }
             if ((int32_t)(now_ms - inst->reasm_slots[i].start_ms) >= (int32_t)ROUTE_REASM_TIMEOUT_MS) {
                 free_reasm_slot(inst, &inst->reasm_slots[i]);
+                inst->stats.reasm_timeouts++;
             }
         }
     }
@@ -159,8 +164,10 @@ void route_frag_input(route_instance_t *inst, const route_header_t *hdr,
     uint16_t reasm_len = 0;
     route_header_t reasm_hdr;
 
-    int rc = route_frag_recv(inst, hdr, payload, payload_len, s_reasm_buf, &reasm_len, &reasm_hdr);
+    // 使用 per-instance buffer 代替 static 全局 buffer，避免多实例数据竞争
+    int rc = route_frag_recv(inst, hdr, payload, payload_len,
+                             inst->reasm_buf, &reasm_len, &reasm_hdr);
     if (rc == 1 && inst->frag_complete_cb) {
-        inst->frag_complete_cb(inst, &reasm_hdr, s_reasm_buf, reasm_len);
+        inst->frag_complete_cb(inst, &reasm_hdr, inst->reasm_buf, reasm_len);
     }
 }

@@ -36,4 +36,8 @@ int route_reply(route_instance_t *inst, uint8_t dest, uint8_t trans_id,
 void route_tick(route_instance_t *inst, uint32_t now_ms);
 void route_poll(route_instance_t *inst);
 
+// === Statistics ===
+const route_stats_t *route_get_stats(const route_instance_t *inst);
+void route_reset_stats(route_instance_t *inst);
+
 #endif // ROUTE_H

@@ -7,7 +7,7 @@ static void route_router_build_frame(const route_header_t *hdr, const uint8_t *p
                               uint16_t payload_len, uint8_t *frame, uint16_t *frame_len) {
     frame[0] = hdr->src;
     frame[1] = hdr->dst;
-    frame[2] = hdr->type;
+    frame[2] = (uint8_t)hdr->type;
     frame[3] = hdr->trans_id;
     frame[4] = hdr->seq;
     frame[5] = hdr->ttl;
@@ -31,11 +31,11 @@ static int route_router_parse_frame(const uint8_t *frame, uint16_t frame_len,
     uint16_t crc_calc = route_crc16(frame, frame_len - 2);
     uint16_t crc_recv = ((uint16_t)frame[frame_len - 2] << 8) | frame[frame_len - 1];
     if (crc_calc != crc_recv) {
-        return ROUTE_ERR_PARAM;
+        return ROUTE_ERR_PARAM;  // CRC error signaled via return; stats updated by caller
     }
     hdr->src = frame[0];
     hdr->dst = frame[1];
-    hdr->type = frame[2];
+    hdr->type = (route_frame_type_t)frame[2];
     hdr->trans_id = frame[3];
     hdr->seq = frame[4];
     hdr->ttl = frame[5];
@@ -46,7 +46,8 @@ static int route_router_parse_frame(const uint8_t *frame, uint16_t frame_len,
     return ROUTE_OK;
 }
 
-static int route_seen_check_and_add(route_instance_t *inst, uint8_t src_id, uint8_t seq, uint8_t trans_id, uint8_t type) {
+static int route_seen_check_and_add(route_instance_t *inst, uint8_t src_id, uint8_t seq,
+                                    uint8_t trans_id, route_frame_type_t type) {
     uint32_t now = inst->current_ms;
 
     // Expire old entries and check for duplicates
@@ -63,7 +64,7 @@ static int route_seen_check_and_add(route_instance_t *inst, uint8_t src_id, uint
             return 1;
         }
     }
-    // Only dedup REQUEST frames
+    // Only dedup REQUEST frames (RESPONSE 由 transaction 状态机防重复)
     if (type == ROUTE_TYPE_REQUEST) {
         inst->seen_table[inst->seen_index].src_id = src_id;
         inst->seen_table[inst->seen_index].seq = seq;
@@ -104,16 +105,19 @@ static int route_router_handle_frame(route_instance_t *inst, const uint8_t *fram
 
     int rc = route_router_parse_frame(frame, frame_len, &hdr, &payload, &payload_len);
     if (rc != ROUTE_OK) {
+        inst->stats.crc_errors++;
         return rc;
     }
 
     if (hdr.ttl == 0) {
+        inst->stats.drop_ttl++;
         return ROUTE_ERR_TIMEOUT;
     }
 
     // 去重检查（REQUEST 帧，包括广播）
     if (hdr.type == ROUTE_TYPE_REQUEST) {
         if (route_seen_check_and_add(inst, hdr.src, hdr.seq, hdr.trans_id, hdr.type)) {
+            inst->stats.drop_duplicate++;
             return 0;
         }
     }
@@ -128,11 +132,13 @@ static int route_router_handle_frame(route_instance_t *inst, const uint8_t *fram
                 inst->ports[i].send(inst->ports[i].port_id, fwd_frame, fwd_len);
             }
         }
-        // 输出解析结果供上层使用（恢复原始 ttl 给上层看）
+        // 返回给上层的 hdr 保留原始 ttl
         hdr.ttl++;
         *out_hdr = hdr;
         *out_payload = payload;
         *out_payload_len = payload_len;
+        inst->stats.rx_packets++;
+        inst->stats.rx_bytes += payload_len;
         return 1;
     }
 
@@ -140,12 +146,15 @@ static int route_router_handle_frame(route_instance_t *inst, const uint8_t *fram
         *out_hdr = hdr;
         *out_payload = payload;
         *out_payload_len = payload_len;
+        inst->stats.rx_packets++;
+        inst->stats.rx_bytes += payload_len;
         return 1;
     }
 
     // 转发：先查路由再构建帧
     const route_entry_t *entry = route_lookup(inst, hdr.dst);
     if (entry == NULL) {
+        inst->stats.drop_no_route++;
         return ROUTE_ERR_NO_ROUTE;
     }
 
@@ -171,6 +180,7 @@ int route_router_send(route_instance_t *inst, const route_header_t *hdr,
 
     const route_entry_t *entry = route_lookup(inst, hdr->dst);
     if (entry == NULL) {
+        inst->stats.drop_no_route++;
         return ROUTE_ERR_NO_ROUTE;
     }
     return route_send_to_port(inst, entry->port_id, frame, frame_len);

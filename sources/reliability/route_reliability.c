@@ -15,7 +15,7 @@ static int e2e_on_send(route_instance_t *inst, uint8_t dest, uint8_t seq,
             inst->pending_acks[i].seq = seq;
             inst->pending_acks[i].trans_id = trans_id;
             inst->pending_acks[i].retry_count = 0;
-            inst->pending_acks[i].next_retry_ms = 0;  // 0 表示尚未设置，首次 tick 时设为 now + timeout
+            inst->pending_acks[i].next_retry_ms = 0;  // 首次 tick 时设为 now + timeout
             if (data && len > 0) {
                 memcpy(inst->pending_acks[i].data, data, len);
             }
@@ -66,6 +66,7 @@ static void e2e_on_tick(route_instance_t *inst, uint32_t now_ms) {
                 .frag_total = 1,
             };
             inst->reliability_lower_send(inst, &hdr, inst->pending_acks[i].data, inst->pending_acks[i].len);
+            inst->stats.retransmissions++;
         }
         inst->pending_acks[i].retry_count++;
         inst->pending_acks[i].next_retry_ms = now_ms + ROUTE_ACK_TIMEOUT_MS;
