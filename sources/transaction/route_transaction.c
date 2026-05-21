@@ -55,7 +55,6 @@ void route_transaction_deinit(route_transaction_ctx_t *ctx) {
     for (uint8_t i = 0; i < max; i++) {
         void (*cb)(int, const uint8_t *, uint16_t, void *) = NULL;
         void *ud = NULL;
-        void *sem = NULL;
 
         trans_lock(ctx);
         transaction_t *t = &ctx->trans_table[i];
@@ -65,17 +64,16 @@ void route_transaction_deinit(route_transaction_ctx_t *ctx) {
                 ud = t->user_data;
             } else if (t->sync_sem && ctx->os) {
                 t->result = ROUTE_ERR_TIMEOUT;
-                sem = t->sync_sem;
+                // sem_post 在锁内，防止与 send_sync 超时后 sem_destroy 竞态
+                ctx->os->sem_post(t->sync_sem);
             }
             t->state = TRANS_STATE_IDLE;
         }
         trans_unlock(ctx);
 
-        // 锁外通知
+        // 锁外回调（回调可能耗时，不适合锁内）
         if (cb) {
             cb(ROUTE_ERR_TIMEOUT, NULL, 0, ud);
-        } else if (sem && ctx->os) {
-            ctx->os->sem_post(sem);
         }
     }
 
@@ -218,9 +216,9 @@ void route_transaction_on_response(route_transaction_ctx_t *ctx, uint8_t src,
         if (t->resp_buf && copy_len > 0) memcpy(t->resp_buf, data, copy_len);
         if (t->resp_len) *t->resp_len = copy_len;
         t->result = ROUTE_OK;
-        void *sem = t->sync_sem;
+        // sem_post 在锁内执行，防止与 send_sync 超时后 sem_destroy 竞态
+        ctx->os->sem_post(t->sync_sem);
         trans_unlock(ctx);
-        ctx->os->sem_post(sem);
     } else {
         t->state = TRANS_STATE_IDLE;
         trans_unlock(ctx);
@@ -232,13 +230,12 @@ void route_transaction_on_response(route_transaction_ctx_t *ctx, uint8_t src,
 void route_transaction_tick(route_transaction_ctx_t *ctx, uint32_t now_ms) {
     if (ctx->shutdown) return;
 
-    // 收集超时条目，锁外统一通知，避免回调死锁
+    // 收集超时回调，锁外统一通知避免回调死锁；
+    // sem_post 在锁内执行（短操作），防止与 send_sync 超时后 sem_destroy 竞态
 #define TRANS_TICK_MAX_BATCH 32
     void (*timeout_cbs[TRANS_TICK_MAX_BATCH])(int, const uint8_t *, uint16_t, void *);
     void *timeout_uds[TRANS_TICK_MAX_BATCH];
-    void *timeout_sems[TRANS_TICK_MAX_BATCH];
     uint8_t timeout_count = 0;
-    uint8_t sem_count = 0;
 
     trans_lock(ctx);
     for (uint8_t i = 0; i < ctx->cfg_max_concurrent_trans; i++) {
@@ -264,26 +261,17 @@ void route_transaction_tick(route_transaction_ctx_t *ctx, uint32_t now_ms) {
             // else: batch full, leave in WAITING for next tick
         } else if (t->sync_sem) {
             t->result = ROUTE_ERR_TIMEOUT;
+            // sem_post 在锁内，确保 send_sync 的 sem_destroy 与此序列化
+            ctx->os->sem_post(t->sync_sem);
             t->state = TRANS_STATE_IDLE;
-            if (sem_count < TRANS_TICK_MAX_BATCH) {
-                timeout_sems[sem_count++] = t->sync_sem;
-            } else {
-                // batch full but state already IDLE; sem_post deferred is unsafe,
-                // so post inline (acceptable since we're about to release lock)
-                ctx->os->sem_post(t->sync_sem);
-            }
         } else {
             t->state = TRANS_STATE_IDLE;
         }
     }
     trans_unlock(ctx);
 
-    // 锁外回调
+    // 锁外回调（回调可能耗时长，不适合在锁内执行）
     for (uint8_t i = 0; i < timeout_count; i++) {
         timeout_cbs[i](ROUTE_ERR_TIMEOUT, NULL, 0, timeout_uds[i]);
-    }
-    // 锁外 sem_post
-    for (uint8_t i = 0; i < sem_count; i++) {
-        ctx->os->sem_post(timeout_sems[i]);
     }
 }

@@ -252,6 +252,8 @@ int route_router_send(route_router_ctx_t *ctx, const route_header_t *hdr,
     uint16_t frame_len = ctx->codec->encode(hdr, payload, payload_len, ctx->send_frame_buf);
 
     if (hdr->dst == ROUTE_BROADCAST_ADDR) {
+        // 写入 seen_table 防止本机发的广播帧回环时被再次 deliver
+        router_seen_check_and_add(ctx, hdr->src, hdr->seq);
         int last_err = ROUTE_OK;
         for (uint8_t i = 0; i < ctx->port_count; i++) {
             int rc = ctx->ports[i].send(ctx->ports[i].port_id, ctx->send_frame_buf, frame_len);

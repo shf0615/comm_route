@@ -294,8 +294,9 @@ int route_frag_send(route_frag_ctx_t *ctx, uint8_t dest, uint8_t trans_id,
                     const uint8_t *data, uint16_t len) {
     if (ctx->lower_send == NULL) return ROUTE_ERR_PARAM;
 
-    uint8_t frag_total = (len + ctx->cfg_frag_size - 1) / ctx->cfg_frag_size;
-    if (frag_total == 0) frag_total = 1;
+    uint16_t frag_total_u16 = (len == 0) ? 1 : (len + ctx->cfg_frag_size - 1) / ctx->cfg_frag_size;
+    if (frag_total_u16 > ctx->cfg_max_frags_per_msg) return ROUTE_ERR_PARAM;
+    uint8_t frag_total = (uint8_t)frag_total_u16;
 
     for (uint8_t i = 0; i < frag_total; i++) {
         uint16_t offset = i * ctx->cfg_frag_size;
