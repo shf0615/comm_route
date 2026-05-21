@@ -277,10 +277,10 @@ int route_router_send(route_router_ctx_t *ctx, const route_header_t *hdr,
 int route_router_input(route_router_ctx_t *ctx, const uint8_t *data, uint16_t len, uint8_t port_id) {
     if (ctx->queue_lock) ctx->queue_lock(ctx->queue_lock_ctx);
     int rc = route_queue_push(&ctx->recv_queue, data, len, port_id);
-    if (ctx->queue_unlock) ctx->queue_unlock(ctx->queue_lock_ctx);
     if (rc != 0 && ctx->stats) {
         ctx->stats->drop_queue_full++;
     }
+    if (ctx->queue_unlock) ctx->queue_unlock(ctx->queue_lock_ctx);
     return rc == 0 ? ROUTE_OK : ROUTE_ERR_FULL;
 }
 

@@ -143,6 +143,11 @@ int route_transaction_send_sync(route_transaction_ctx_t *ctx, uint8_t dest,
     t->timeout_ms = 0;
     t->timeout_duration = timeout_ms;
     t->sync_sem = ctx->os->sem_create();
+    if (t->sync_sem == NULL) {
+        t->state = TRANS_STATE_IDLE;
+        trans_unlock(ctx);
+        return ROUTE_ERR_NO_MEM;
+    }
     uint8_t seq = ctx->seq_counter++;
     t->expected_seq = seq;
     trans_unlock(ctx);
@@ -244,6 +249,7 @@ void route_transaction_tick(route_transaction_ctx_t *ctx, uint32_t now_ms) {
 
         if (t->timeout_ms == 0 && t->timeout_duration > 0) {
             t->timeout_ms = now_ms + t->timeout_duration;
+            if (t->timeout_ms == 0) t->timeout_ms = 1;  // 避免与哨兵值冲突
             continue;
         }
         if (t->timeout_ms == 0 || (int32_t)(now_ms - t->timeout_ms) < 0) continue;
