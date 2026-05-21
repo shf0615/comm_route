@@ -52,6 +52,10 @@ typedef struct {
     uint16_t *recv_queue_lengths;
     uint8_t *recv_queue_from_port;
 
+    // 工作缓冲区（消除栈上 VLA）
+    uint8_t *tx_frame_buf;      // [overhead + frag_size]，发送/转发编码用
+    uint8_t *rx_frame_buf;      // [overhead + frag_size]，poll 取帧用
+
     route_stats_t *stats;       // 共享统计（NULL = 不统计）
 } route_router_config_t;
 
@@ -78,6 +82,10 @@ typedef struct {
     uint32_t current_ms;
 
     route_recv_queue_t recv_queue;
+
+    // 工作缓冲区
+    uint8_t *tx_frame_buf;      // 发送/转发编码用
+    uint8_t *rx_frame_buf;      // poll 取帧用
 
     const route_codec_t *codec;
 

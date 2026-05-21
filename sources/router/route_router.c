@@ -59,6 +59,7 @@ int route_router_init(route_router_ctx_t *ctx, const route_router_config_t *cfg)
     if (cfg->recv_queue_size == 0) return ROUTE_ERR_PARAM;
     if (cfg->recv_queue_data == NULL || cfg->recv_queue_lengths == NULL || cfg->recv_queue_from_port == NULL) return ROUTE_ERR_PARAM;
     if (cfg->frag_size == 0) return ROUTE_ERR_PARAM;
+    if (cfg->tx_frame_buf == NULL || cfg->rx_frame_buf == NULL) return ROUTE_ERR_PARAM;
 
     memset(ctx, 0, sizeof(*ctx));
     ctx->node_id = cfg->node_id;
@@ -75,6 +76,8 @@ int route_router_init(route_router_ctx_t *ctx, const route_router_config_t *cfg)
     ctx->cfg_seen_table_size = cfg->seen_table_size;
     ctx->cfg_seen_expire_ms = cfg->seen_expire_ms;
     ctx->stats = cfg->stats;
+    ctx->tx_frame_buf = cfg->tx_frame_buf;
+    ctx->rx_frame_buf = cfg->rx_frame_buf;
 
     route_queue_init(&ctx->recv_queue, cfg->recv_queue_data, cfg->recv_queue_lengths,
                      cfg->recv_queue_from_port, cfg->recv_queue_size, ctx->cfg_block_size);
@@ -177,11 +180,10 @@ static int router_handle_frame(route_router_ctx_t *ctx, const uint8_t *frame,
         }
         // 转发到其他端口
         hdr.ttl--;
-        uint8_t fwd_frame[ctx->cfg_block_size];
-        uint16_t fwd_len = ctx->codec->encode(&hdr, payload, payload_len, fwd_frame);
+        uint16_t fwd_len = ctx->codec->encode(&hdr, payload, payload_len, ctx->tx_frame_buf);
         for (uint8_t i = 0; i < ctx->port_count; i++) {
             if (ctx->ports[i].port_id != from_port) {
-                if (ctx->ports[i].send(ctx->ports[i].port_id, fwd_frame, fwd_len) == ROUTE_OK) {
+                if (ctx->ports[i].send(ctx->ports[i].port_id, ctx->tx_frame_buf, fwd_len) == ROUTE_OK) {
                     if (ctx->stats) { ctx->stats->tx_packets++; ctx->stats->tx_bytes += fwd_len; }
                 }
             }
@@ -211,9 +213,8 @@ static int router_handle_frame(route_router_ctx_t *ctx, const uint8_t *frame,
         return ROUTE_ERR_NO_ROUTE;
     }
     hdr.ttl--;
-    uint8_t fwd_frame[ctx->cfg_block_size];
-    uint16_t fwd_len = ctx->codec->encode(&hdr, payload, payload_len, fwd_frame);
-    int fwd_rc = router_send_to_port(ctx, entry->port_id, fwd_frame, fwd_len);
+    uint16_t fwd_len = ctx->codec->encode(&hdr, payload, payload_len, ctx->tx_frame_buf);
+    int fwd_rc = router_send_to_port(ctx, entry->port_id, ctx->tx_frame_buf, fwd_len);
     if (fwd_rc == ROUTE_OK && ctx->stats) {
         ctx->stats->tx_packets++;
         ctx->stats->tx_bytes += fwd_len;
@@ -225,13 +226,12 @@ static int router_handle_frame(route_router_ctx_t *ctx, const uint8_t *frame,
 
 int route_router_send(route_router_ctx_t *ctx, const route_header_t *hdr,
                       const uint8_t *payload, uint16_t payload_len) {
-    uint8_t frame[ctx->cfg_block_size];
-    uint16_t frame_len = ctx->codec->encode(hdr, payload, payload_len, frame);
+    uint16_t frame_len = ctx->codec->encode(hdr, payload, payload_len, ctx->tx_frame_buf);
 
     if (hdr->dst == ROUTE_BROADCAST_ADDR) {
         int last_err = ROUTE_OK;
         for (uint8_t i = 0; i < ctx->port_count; i++) {
-            int rc = ctx->ports[i].send(ctx->ports[i].port_id, frame, frame_len);
+            int rc = ctx->ports[i].send(ctx->ports[i].port_id, ctx->tx_frame_buf, frame_len);
             if (rc != ROUTE_OK) last_err = rc;
         }
         return last_err;
@@ -242,7 +242,7 @@ int route_router_send(route_router_ctx_t *ctx, const route_header_t *hdr,
         if (ctx->stats) ctx->stats->drop_no_route++;
         return ROUTE_ERR_NO_ROUTE;
     }
-    return router_send_to_port(ctx, entry->port_id, frame, frame_len);
+    return router_send_to_port(ctx, entry->port_id, ctx->tx_frame_buf, frame_len);
 }
 
 int route_router_input(route_router_ctx_t *ctx, const uint8_t *data, uint16_t len, uint8_t port_id) {
@@ -254,12 +254,11 @@ int route_router_input(route_router_ctx_t *ctx, const uint8_t *data, uint16_t le
 }
 
 void route_router_poll(route_router_ctx_t *ctx) {
-    uint8_t frame[ctx->cfg_block_size];
     uint16_t frame_len;
     uint8_t from_port;
 
-    while (route_queue_pop(&ctx->recv_queue, frame, &frame_len, &from_port) == 0) {
-        router_handle_frame(ctx, frame, frame_len, from_port);
+    while (route_queue_pop(&ctx->recv_queue, ctx->rx_frame_buf, &frame_len, &from_port) == 0) {
+        router_handle_frame(ctx, ctx->rx_frame_buf, frame_len, from_port);
     }
 }
 
