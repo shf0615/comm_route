@@ -57,6 +57,11 @@ typedef struct {
     uint8_t *rx_frame_buf;      // [overhead + frag_size]，poll 取帧用
 
     route_stats_t *stats;       // 共享统计（NULL = 不统计）
+
+    // 可选队列锁（用于多写者 ISR 安全，NULL = 无锁）
+    void (*queue_lock)(void *lock_ctx);
+    void (*queue_unlock)(void *lock_ctx);
+    void *queue_lock_ctx;
 } route_router_config_t;
 
 // ============ Router Context ============
@@ -95,6 +100,11 @@ typedef struct {
     void *deliver_ctx;
 
     route_stats_t *stats;
+
+    // 可选队列锁
+    void (*queue_lock)(void *lock_ctx);
+    void (*queue_unlock)(void *lock_ctx);
+    void *queue_lock_ctx;
 } route_router_ctx_t;
 
 // ============ API ============

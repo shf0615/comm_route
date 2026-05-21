@@ -68,6 +68,11 @@ typedef struct {
     uint8_t pool_block_count;
 
     route_stats_t *stats;
+
+    // 可选线程安全（NULL = 无锁，单线程使用）
+    void (*lock)(void *lock_ctx);
+    void (*unlock)(void *lock_ctx);
+    void *lock_ctx;
 } route_frag_config_t;
 
 // ============ Frag Context ============
@@ -105,6 +110,11 @@ typedef struct {
     void *complete_ctx;
 
     route_stats_t *stats;
+
+    // 可选锁
+    void (*lock)(void *lock_ctx);
+    void (*unlock)(void *lock_ctx);
+    void *lock_ctx;
 } route_frag_ctx_t;
 
 // ============ API ============

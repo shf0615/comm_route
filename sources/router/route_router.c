@@ -78,6 +78,9 @@ int route_router_init(route_router_ctx_t *ctx, const route_router_config_t *cfg)
     ctx->stats = cfg->stats;
     ctx->tx_frame_buf = cfg->tx_frame_buf;
     ctx->rx_frame_buf = cfg->rx_frame_buf;
+    ctx->queue_lock = cfg->queue_lock;
+    ctx->queue_unlock = cfg->queue_unlock;
+    ctx->queue_lock_ctx = cfg->queue_lock_ctx;
 
     route_queue_init(&ctx->recv_queue, cfg->recv_queue_data, cfg->recv_queue_lengths,
                      cfg->recv_queue_from_port, cfg->recv_queue_size, ctx->cfg_block_size);
@@ -246,7 +249,9 @@ int route_router_send(route_router_ctx_t *ctx, const route_header_t *hdr,
 }
 
 int route_router_input(route_router_ctx_t *ctx, const uint8_t *data, uint16_t len, uint8_t port_id) {
+    if (ctx->queue_lock) ctx->queue_lock(ctx->queue_lock_ctx);
     int rc = route_queue_push(&ctx->recv_queue, data, len, port_id);
+    if (ctx->queue_unlock) ctx->queue_unlock(ctx->queue_lock_ctx);
     if (rc != 0 && ctx->stats) {
         ctx->stats->drop_queue_full++;
     }
@@ -257,7 +262,11 @@ void route_router_poll(route_router_ctx_t *ctx) {
     uint16_t frame_len;
     uint8_t from_port;
 
-    while (route_queue_pop(&ctx->recv_queue, ctx->rx_frame_buf, &frame_len, &from_port) == 0) {
+    for (;;) {
+        if (ctx->queue_lock) ctx->queue_lock(ctx->queue_lock_ctx);
+        int rc = route_queue_pop(&ctx->recv_queue, ctx->rx_frame_buf, &frame_len, &from_port);
+        if (ctx->queue_unlock) ctx->queue_unlock(ctx->queue_lock_ctx);
+        if (rc != 0) break;
         router_handle_frame(ctx, ctx->rx_frame_buf, frame_len, from_port);
     }
 }
