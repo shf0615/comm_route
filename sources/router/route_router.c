@@ -158,7 +158,7 @@ static int router_seen_check_and_add(route_router_ctx_t *ctx, uint8_t src_id, ui
             return 1;  // duplicate
         }
     }
-    // 优先找无效槽
+    // 写入策略：优先使用无效槽；若全部有效则 FIFO 覆盖 seen_index 指向的最旧条目
     uint8_t write_idx = ctx->seen_index;
     for (uint8_t i = 0; i < ctx->cfg_seen_table_size; i++) {
         if (!ctx->seen_table[i].valid) {
@@ -200,19 +200,19 @@ static int router_handle_frame(route_router_ctx_t *ctx, const uint8_t *frame,
             if (ctx->stats) ctx->stats->drop_duplicate++;
             return 0;
         }
-        // 转发到其他端口
-        uint8_t orig_ttl = hdr.ttl;
-        hdr.ttl--;
-        uint16_t fwd_len = ctx->codec->encode(&hdr, payload, payload_len, ctx->fwd_frame_buf);
-        for (uint8_t i = 0; i < ctx->port_count; i++) {
-            if (ctx->ports[i].port_id != from_port) {
-                if (ctx->ports[i].send(ctx->ports[i].port_id, ctx->fwd_frame_buf, fwd_len) == ROUTE_OK) {
-                    if (ctx->stats) { ctx->stats->tx_packets++; ctx->stats->tx_bytes += fwd_len; }
+        // 转发到其他端口（仅在 ttl > 1 时，ttl=1 的帧不应再转发）
+        if (hdr.ttl > 1) {
+            hdr.ttl--;
+            uint16_t fwd_len = ctx->codec->encode(&hdr, payload, payload_len, ctx->fwd_frame_buf);
+            for (uint8_t i = 0; i < ctx->port_count; i++) {
+                if (ctx->ports[i].port_id != from_port) {
+                    if (ctx->ports[i].send(ctx->ports[i].port_id, ctx->fwd_frame_buf, fwd_len) == ROUTE_OK) {
+                        if (ctx->stats) { ctx->stats->tx_packets++; ctx->stats->tx_bytes += fwd_len; }
+                    }
                 }
             }
+            hdr.ttl++;  // 恢复原始 ttl 用于本机送达
         }
-        // 送达本机
-        hdr.ttl = orig_ttl;
         if (ctx->stats) { ctx->stats->rx_packets++; ctx->stats->rx_bytes += ROUTE_HEADER_SIZE + payload_len; }
         if (ctx->deliver_cb) {
             ctx->deliver_cb(ctx->deliver_ctx, &hdr, payload, payload_len);

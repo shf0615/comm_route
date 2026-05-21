@@ -13,7 +13,7 @@ typedef struct {
     route_transaction_ctx_t *transaction;   // 可选，NULL = 无请求-响应
 
     uint8_t node_id;
-    uint16_t bcast_seq_counter;
+    uint8_t bcast_seq_counter;
 
     void (*on_recv_cb)(void *ctx, uint8_t src, uint8_t trans_id,
                        const uint8_t *data, uint16_t len);

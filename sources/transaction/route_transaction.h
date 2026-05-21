@@ -5,6 +5,10 @@
 #include "../common/route_os.h"
 
 // ============ Transaction State ============
+//
+// 注意：线上帧中的 trans_id 字段实际是发送方的本地 slot index。
+// 对端回复时必须原样回传 trans_id，以便发送方通过 trans_table[trans_id]
+// 定位对应事务。这不是全局唯一事务标识符。
 
 typedef enum {
     TRANS_STATE_IDLE = 0,

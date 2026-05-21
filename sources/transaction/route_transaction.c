@@ -107,6 +107,7 @@ int route_transaction_send_async(route_transaction_ctx_t *ctx, uint8_t dest,
     t->expected_seq = seq;
     trans_unlock(ctx);
 
+    // trans_id = slot index, 对端必须原样回传
     int rc = ctx->lower_send ?
         ctx->lower_send(ctx->lower_send_ctx, dest, (uint8_t)idx, seq, ROUTE_TYPE_REQUEST, data, len) :
         ROUTE_ERR_PARAM;
@@ -148,6 +149,7 @@ int route_transaction_send_sync(route_transaction_ctx_t *ctx, uint8_t dest,
     t->expected_seq = seq;
     trans_unlock(ctx);
 
+    // trans_id = slot index, 对端必须原样回传
     int rc = ctx->lower_send ?
         ctx->lower_send(ctx->lower_send_ctx, dest, (uint8_t)idx, seq, ROUTE_TYPE_REQUEST, data, len) :
         ROUTE_ERR_PARAM;
@@ -257,12 +259,18 @@ void route_transaction_tick(route_transaction_ctx_t *ctx, uint32_t now_ms) {
                 timeout_cbs[timeout_count] = t->callback;
                 timeout_uds[timeout_count] = t->user_data;
                 timeout_count++;
+                t->state = TRANS_STATE_IDLE;
             }
-            t->state = TRANS_STATE_IDLE;
+            // else: batch full, leave in WAITING for next tick
         } else if (t->sync_sem) {
             t->result = ROUTE_ERR_TIMEOUT;
+            t->state = TRANS_STATE_IDLE;
             if (sem_count < TRANS_TICK_MAX_BATCH) {
                 timeout_sems[sem_count++] = t->sync_sem;
+            } else {
+                // batch full but state already IDLE; sem_post deferred is unsafe,
+                // so post inline (acceptable since we're about to release lock)
+                ctx->os->sem_post(t->sync_sem);
             }
         } else {
             t->state = TRANS_STATE_IDLE;

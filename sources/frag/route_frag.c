@@ -317,7 +317,6 @@ int route_frag_send(route_frag_ctx_t *ctx, uint8_t dest, uint8_t trans_id,
 
         int rc = ctx->lower_send(ctx->lower_send_ctx, &hdr, chunk_ptr, chunk);
         if (rc != ROUTE_OK) return rc;
-        if (ctx->stats) { ctx->stats->tx_packets++; ctx->stats->tx_bytes += ROUTE_HEADER_SIZE + chunk; }
 
         // 注册 reliability 跟踪（需要锁保护 pending_acks）
         frag_lock(ctx);
