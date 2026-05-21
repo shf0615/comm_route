@@ -7,7 +7,7 @@ void route_transaction_set_lower_send(route_instance_t *inst, route_transaction_
 }
 
 static int alloc_transaction(route_instance_t *inst) {
-    for (uint8_t i = 0; i < ROUTE_MAX_CONCURRENT_TRANSACTIONS; i++) {
+    for (uint8_t i = 0; i < inst->cfg_max_concurrent_trans; i++) {
         if (inst->trans_table[i].state == TRANS_STATE_IDLE) {
             return i;
         }
@@ -41,10 +41,10 @@ int route_transaction_send_async(route_instance_t *inst, uint8_t dest,
     t->callback = cb;
     t->user_data = user_data;
     t->timeout_ms = 0;
-    t->timeout_duration = ROUTE_ACK_TIMEOUT_MS * (ROUTE_ACK_RETRY_MAX + 2);
+    t->timeout_duration = inst->cfg_ack_timeout_ms * (inst->cfg_ack_retry_max + 2);
     t->sync_sem = NULL;
 
-    uint8_t seq = inst->seq_counter++;
+    uint8_t seq = inst->seq_counter++;  // protected by trans_lock
 
     trans_unlock(inst);
 
@@ -56,9 +56,16 @@ int route_transaction_send_async(route_instance_t *inst, uint8_t dest,
         return rc;
     }
 
-    // 只对单分片数据注册 reliability（多分片靠 transaction 超时保证）
-    if (inst->reliability && len <= ROUTE_FRAG_SIZE) {
-        inst->reliability->on_send(inst, dest, seq, (uint8_t)idx, data, len);
+    // 注册 reliability（每个分片均独立跟踪 ACK）
+    if (inst->reliability) {
+        uint8_t frag_total = (len + inst->cfg_frag_size - 1) / inst->cfg_frag_size;
+        if (frag_total == 0) frag_total = 1;
+        for (uint8_t fi = 0; fi < frag_total; fi++) {
+            uint16_t offset = fi * inst->cfg_frag_size;
+            uint16_t chunk = len - offset;
+            if (chunk > inst->cfg_frag_size) chunk = inst->cfg_frag_size;
+            inst->reliability->on_send(inst, dest, seq, fi, frag_total, ROUTE_TYPE_REQUEST, (uint8_t)idx, &data[offset], chunk);
+        }
     }
 
     // 发送完成，切换到 WAITING 状态
@@ -95,7 +102,7 @@ int route_transaction_send_sync(route_instance_t *inst, uint8_t dest,
     t->timeout_duration = timeout_ms;
     t->sync_sem = inst->os->sem_create();
 
-    uint8_t seq = inst->seq_counter++;
+    uint8_t seq = inst->seq_counter++;  // protected by trans_lock
 
     trans_unlock(inst);
 
@@ -109,9 +116,16 @@ int route_transaction_send_sync(route_instance_t *inst, uint8_t dest,
         return rc;
     }
 
-    // 只对单分片数据注册 reliability
-    if (inst->reliability && len <= ROUTE_FRAG_SIZE) {
-        inst->reliability->on_send(inst, dest, seq, (uint8_t)idx, data, len);
+    // 注册 reliability（每个分片均独立跟踪 ACK）
+    if (inst->reliability) {
+        uint8_t frag_total = (len + inst->cfg_frag_size - 1) / inst->cfg_frag_size;
+        if (frag_total == 0) frag_total = 1;
+        for (uint8_t fi = 0; fi < frag_total; fi++) {
+            uint16_t offset = fi * inst->cfg_frag_size;
+            uint16_t chunk = len - offset;
+            if (chunk > inst->cfg_frag_size) chunk = inst->cfg_frag_size;
+            inst->reliability->on_send(inst, dest, seq, fi, frag_total, ROUTE_TYPE_REQUEST, (uint8_t)idx, &data[offset], chunk);
+        }
     }
 
     // 切换到 WAITING
@@ -133,22 +147,26 @@ int route_transaction_send_sync(route_instance_t *inst, uint8_t dest,
 
 int route_transaction_reply(route_instance_t *inst, uint8_t dest, uint8_t trans_id,
                             const uint8_t *data, uint16_t len) {
+    trans_lock(inst);
     uint8_t seq = inst->seq_counter++;
+    trans_unlock(inst);
     return route_frag_send_typed(inst, dest, trans_id, seq, ROUTE_TYPE_RESPONSE, data, len);
 }
 
 void route_transaction_on_response(route_instance_t *inst, uint8_t src,
                                    uint8_t trans_id, const uint8_t *data, uint16_t len) {
-    if (trans_id >= ROUTE_MAX_CONCURRENT_TRANSACTIONS) return;
+    if (trans_id >= inst->cfg_max_concurrent_trans) return;
 
     trans_lock(inst);
 
     transaction_t *t = &inst->trans_table[trans_id];
     if (t->state != TRANS_STATE_WAITING) {
+        inst->stats.drop_duplicate++;
         trans_unlock(inst);
         return;
     }
     if (t->dest_id != src) {
+        inst->stats.drop_duplicate++;
         trans_unlock(inst);
         return;
     }
@@ -176,7 +194,7 @@ void route_transaction_on_response(route_instance_t *inst, uint8_t src,
 }
 
 void route_transaction_tick(route_instance_t *inst, uint32_t now_ms) {
-    for (uint8_t i = 0; i < ROUTE_MAX_CONCURRENT_TRANSACTIONS; i++) {
+    for (uint8_t i = 0; i < inst->cfg_max_concurrent_trans; i++) {
         trans_lock(inst);
 
         transaction_t *t = &inst->trans_table[i];

@@ -6,14 +6,18 @@ void route_reliability_set_lower_send(route_instance_t *inst, route_lower_send_t
 }
 
 static int e2e_on_send(route_instance_t *inst, uint8_t dest, uint8_t seq,
-                       uint8_t trans_id, const uint8_t *data, uint16_t len) {
-    if (len > ROUTE_FRAG_SIZE) return ROUTE_ERR_PARAM;  // only single-frag data
-    for (uint8_t i = 0; i < ROUTE_MAX_CONCURRENT_TRANSACTIONS; i++) {
+                       uint8_t frag_idx, uint8_t frag_total, uint8_t type, uint8_t trans_id,
+                       const uint8_t *data, uint16_t len) {
+    if (len > inst->cfg_frag_size) return ROUTE_ERR_PARAM;  // only single-frag data
+    for (uint8_t i = 0; i < inst->cfg_max_concurrent_trans; i++) {
         if (!inst->pending_acks[i].active) {
             inst->pending_acks[i].active = 1;
             inst->pending_acks[i].dest_id = dest;
             inst->pending_acks[i].seq = seq;
+            inst->pending_acks[i].frag_idx = frag_idx;
+            inst->pending_acks[i].frag_total = frag_total;
             inst->pending_acks[i].trans_id = trans_id;
+            inst->pending_acks[i].type = type;
             inst->pending_acks[i].retry_count = 0;
             inst->pending_acks[i].next_retry_ms = 0;  // 首次 tick 时设为 now + timeout
             if (data && len > 0) {
@@ -26,30 +30,30 @@ static int e2e_on_send(route_instance_t *inst, uint8_t dest, uint8_t seq,
     return ROUTE_ERR_FULL;
 }
 
-static void e2e_on_recv_ack(route_instance_t *inst, uint8_t src, uint8_t seq) {
-    for (uint8_t i = 0; i < ROUTE_MAX_CONCURRENT_TRANSACTIONS; i++) {
+static void e2e_on_recv_ack(route_instance_t *inst, uint8_t src, uint8_t seq, uint8_t frag_idx) {
+    (void)frag_idx;  // ACK clears all fragments of the same (src, seq)
+    for (uint8_t i = 0; i < inst->cfg_max_concurrent_trans; i++) {
         if (inst->pending_acks[i].active &&
             inst->pending_acks[i].dest_id == src &&
             inst->pending_acks[i].seq == seq) {
             inst->pending_acks[i].active = 0;
-            return;
         }
     }
 }
 
 static void e2e_on_tick(route_instance_t *inst, uint32_t now_ms) {
-    for (uint8_t i = 0; i < ROUTE_MAX_CONCURRENT_TRANSACTIONS; i++) {
+    for (uint8_t i = 0; i < inst->cfg_max_concurrent_trans; i++) {
         if (!inst->pending_acks[i].active) continue;
 
         // 首次 tick 时设置绝对超时时间
         if (inst->pending_acks[i].next_retry_ms == 0) {
-            inst->pending_acks[i].next_retry_ms = now_ms + ROUTE_ACK_TIMEOUT_MS;
+            inst->pending_acks[i].next_retry_ms = now_ms + inst->cfg_ack_timeout_ms;
             continue;
         }
 
         if ((int32_t)(now_ms - inst->pending_acks[i].next_retry_ms) < 0) continue;
 
-        if (inst->pending_acks[i].retry_count >= ROUTE_ACK_RETRY_MAX) {
+        if (inst->pending_acks[i].retry_count >= inst->cfg_ack_retry_max) {
             inst->pending_acks[i].active = 0;
             continue;
         }
@@ -58,18 +62,18 @@ static void e2e_on_tick(route_instance_t *inst, uint32_t now_ms) {
             route_header_t hdr = {
                 .src = inst->node_id,
                 .dst = inst->pending_acks[i].dest_id,
-                .type = ROUTE_TYPE_REQUEST,
+                .type = inst->pending_acks[i].type,
                 .trans_id = inst->pending_acks[i].trans_id,
                 .seq = inst->pending_acks[i].seq,
-                .ttl = ROUTE_DEFAULT_TTL,
-                .frag_idx = 0,
-                .frag_total = 1,
+                .ttl = inst->cfg_default_ttl,
+                .frag_idx = inst->pending_acks[i].frag_idx,
+                .frag_total = inst->pending_acks[i].frag_total,
             };
             inst->reliability_lower_send(inst, &hdr, inst->pending_acks[i].data, inst->pending_acks[i].len);
             inst->stats.retransmissions++;
         }
         inst->pending_acks[i].retry_count++;
-        inst->pending_acks[i].next_retry_ms = now_ms + ROUTE_ACK_TIMEOUT_MS;
+        inst->pending_acks[i].next_retry_ms = now_ms + inst->cfg_ack_timeout_ms;
     }
 }
 
@@ -83,7 +87,7 @@ const reliability_strategy_t *route_reliability_e2e_strategy(void) {
     return &e2e_strategy;
 }
 
-int route_reliability_send_ack(route_instance_t *inst, uint8_t dest, uint8_t seq) {
+int route_reliability_send_ack(route_instance_t *inst, uint8_t dest, uint8_t seq, uint8_t frag_idx) {
     if (inst->reliability_lower_send == NULL) return ROUTE_ERR_PARAM;
     route_header_t hdr = {
         .src = inst->node_id,
@@ -91,8 +95,8 @@ int route_reliability_send_ack(route_instance_t *inst, uint8_t dest, uint8_t seq
         .type = ROUTE_TYPE_ACK,
         .trans_id = 0,
         .seq = seq,
-        .ttl = ROUTE_DEFAULT_TTL,
-        .frag_idx = 0,
+        .ttl = inst->cfg_default_ttl,
+        .frag_idx = frag_idx,
         .frag_total = 1,
     };
     return inst->reliability_lower_send(inst, &hdr, NULL, 0);

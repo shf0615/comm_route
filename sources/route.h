@@ -4,8 +4,8 @@
 #include "common/route_types.h"
 
 // === Lifecycle ===
-route_instance_t *route_create(uint8_t node_id, const route_config_t *config);
-void route_destroy(route_instance_t *inst);
+int route_init(route_instance_t *inst, uint8_t node_id, const route_config_t *config);
+void route_deinit(route_instance_t *inst);
 
 // === Configuration ===
 int route_port_register(route_instance_t *inst, const route_port_t *port);

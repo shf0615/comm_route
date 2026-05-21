@@ -1,23 +1,29 @@
 #include "route_queue.h"
 #include <string.h>
 
-void route_queue_init(route_recv_queue_t *q) {
+void route_queue_init(route_recv_queue_t *q, uint8_t *data, uint16_t *lengths,
+                      uint8_t *from_port, uint8_t capacity, uint16_t block_size) {
+    q->data = data;
+    q->lengths = lengths;
+    q->from_port = from_port;
+    q->capacity = capacity;
+    q->block_size = block_size;
     q->head = 0;
     q->tail = 0;
     q->count = 0;
 }
 
 int route_queue_push(route_recv_queue_t *q, const uint8_t *data, uint16_t len, uint8_t from_port) {
-    if (q->count >= ROUTE_RECV_QUEUE_SIZE) {
+    if (q->count >= q->capacity) {
         return -1;
     }
-    if (len > ROUTE_BLOCK_SIZE) {
+    if (len > q->block_size) {
         return -1;
     }
-    memcpy(q->data[q->tail], data, len);
+    memcpy(q->data + (q->tail * q->block_size), data, len);
     q->lengths[q->tail] = len;
     q->from_port[q->tail] = from_port;
-    q->tail = (q->tail + 1) % ROUTE_RECV_QUEUE_SIZE;
+    q->tail = (q->tail + 1) % q->capacity;
     q->count++;
     return 0;
 }
@@ -28,8 +34,8 @@ int route_queue_pop(route_recv_queue_t *q, uint8_t *data, uint16_t *len, uint8_t
     }
     *len = q->lengths[q->head];
     *from_port = q->from_port[q->head];
-    memcpy(data, q->data[q->head], *len);
-    q->head = (q->head + 1) % ROUTE_RECV_QUEUE_SIZE;
+    memcpy(data, q->data + (q->head * q->block_size), *len);
+    q->head = (q->head + 1) % q->capacity;
     q->count--;
     return 0;
 }

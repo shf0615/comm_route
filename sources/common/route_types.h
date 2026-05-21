@@ -4,62 +4,10 @@
 #include <stdint.h>
 #include <stddef.h>
 
-// ============ Configuration (override in route_config.h if needed) ============
-
-#ifndef ROUTE_MAX_INSTANCES
-#define ROUTE_MAX_INSTANCES               4
-#endif
-#ifndef ROUTE_MAX_NODES
-#define ROUTE_MAX_NODES                   32
-#endif
-#ifndef ROUTE_MAX_PORTS
-#define ROUTE_MAX_PORTS                   4
-#endif
-#ifndef ROUTE_MAX_CONCURRENT_TRANSACTIONS
-#define ROUTE_MAX_CONCURRENT_TRANSACTIONS 8
-#endif
-#ifndef ROUTE_MAX_PAYLOAD
-#define ROUTE_MAX_PAYLOAD                 256
-#endif
-#ifndef ROUTE_FRAG_SIZE
-#define ROUTE_FRAG_SIZE                   32
-#endif
-#ifndef ROUTE_MAX_REASM_SLOTS
-#define ROUTE_MAX_REASM_SLOTS             4
-#endif
-#ifndef ROUTE_POOL_BLOCK_COUNT
-#define ROUTE_POOL_BLOCK_COUNT            16
-#endif
-#ifndef ROUTE_ACK_TIMEOUT_MS
-#define ROUTE_ACK_TIMEOUT_MS              1000
-#endif
-#ifndef ROUTE_ACK_RETRY_MAX
-#define ROUTE_ACK_RETRY_MAX               3
-#endif
-#ifndef ROUTE_DEFAULT_TTL
-#define ROUTE_DEFAULT_TTL                 8
-#endif
-#ifndef ROUTE_SEEN_TABLE_SIZE
-#define ROUTE_SEEN_TABLE_SIZE             16
-#endif
-#ifndef ROUTE_SEEN_EXPIRE_MS
-#define ROUTE_SEEN_EXPIRE_MS              10000
-#endif
-#ifndef ROUTE_REASM_TIMEOUT_MS
-#define ROUTE_REASM_TIMEOUT_MS            5000
-#endif
-#ifndef ROUTE_RECV_QUEUE_SIZE
-#define ROUTE_RECV_QUEUE_SIZE             16
-#endif
-#ifndef ROUTE_MAX_FRAGS_PER_MSG
-#define ROUTE_MAX_FRAGS_PER_MSG           ((ROUTE_MAX_PAYLOAD / ROUTE_FRAG_SIZE) + 1)
-#endif
-
 // ============ Constants ============
 
 #define ROUTE_BROADCAST_ADDR    0xFF
 #define ROUTE_HEADER_SIZE       10
-#define ROUTE_BLOCK_SIZE        (ROUTE_HEADER_SIZE + ROUTE_FRAG_SIZE)
 
 // ============ Error Codes ============
 
@@ -87,7 +35,7 @@ typedef enum {
 typedef struct {
     uint8_t src;
     uint8_t dst;
-    route_frame_type_t type;
+    uint8_t type;       // route_frame_type_t value, stored as uint8_t for wire compatibility
     uint8_t trans_id;
     uint8_t seq;
     uint8_t ttl;
@@ -128,8 +76,8 @@ typedef struct {
     uint8_t frag_total;
     uint8_t received_count;
     uint32_t start_ms;
-    uint8_t *fragments[ROUTE_MAX_FRAGS_PER_MSG];
-    uint8_t frag_lens[ROUTE_MAX_FRAGS_PER_MSG];
+    uint8_t **fragments;    // array of pointers, size = max_frags_per_msg
+    uint8_t *frag_lens;     // array, size = max_frags_per_msg
     uint8_t active;
 } route_reasm_ctx_t;
 
@@ -138,9 +86,9 @@ typedef struct {
 typedef struct route_instance route_instance_t;
 
 typedef struct {
-    int (*on_send)(route_instance_t *inst, uint8_t dest, uint8_t seq,
-                   uint8_t trans_id, const uint8_t *data, uint16_t len);
-    void (*on_recv_ack)(route_instance_t *inst, uint8_t src, uint8_t seq);
+    int (*on_send)(route_instance_t *inst, uint8_t dest, uint8_t seq, uint8_t frag_idx,
+                   uint8_t frag_total, uint8_t type, uint8_t trans_id, const uint8_t *data, uint16_t len);
+    void (*on_recv_ack)(route_instance_t *inst, uint8_t src, uint8_t seq, uint8_t frag_idx);
     void (*on_tick)(route_instance_t *inst, uint32_t now_ms);
 } reliability_strategy_t;
 
@@ -150,10 +98,13 @@ typedef struct {
     uint8_t active;
     uint8_t dest_id;
     uint8_t seq;
+    uint8_t frag_idx;
+    uint8_t frag_total;
     uint8_t trans_id;
+    uint8_t type;
     uint8_t retry_count;
     uint32_t next_retry_ms;
-    uint8_t data[ROUTE_FRAG_SIZE];  // copy of payload (max one fragment)
+    uint8_t *data;          // points into pending_ack_data_storage, size = frag_size
     uint16_t len;
 } route_pending_ack_t;
 
@@ -168,8 +119,8 @@ typedef enum {
 typedef struct {
     uint8_t state;
     uint8_t dest_id;
-    uint32_t timeout_ms;       // absolute deadline (0 = not yet set, filled on first tick)
-    uint32_t timeout_duration; // relative timeout duration
+    uint32_t timeout_ms;
+    uint32_t timeout_duration;
     void (*callback)(int result, const uint8_t *data, uint16_t len, void *user_data);
     void *user_data;
     void *sync_sem;
@@ -192,28 +143,25 @@ typedef struct {
     void (*sem_destroy)(void *sem);
 } route_os_t;
 
-// ============ Config ============
-
-typedef struct {
-    const route_os_t *os;
-} route_config_t;
-
 // ============ Memory Pool ============
 
 typedef struct {
-    uint8_t *free_list[ROUTE_POOL_BLOCK_COUNT];
+    uint8_t **free_list;    // array of pointers, size = pool_block_count
     uint8_t free_count;
+    uint8_t max_count;      // capacity
 } route_pool_t;
 
 // ============ Receive Queue ============
 
 typedef struct {
-    uint8_t data[ROUTE_RECV_QUEUE_SIZE][ROUTE_BLOCK_SIZE];
-    uint16_t lengths[ROUTE_RECV_QUEUE_SIZE];
-    uint8_t from_port[ROUTE_RECV_QUEUE_SIZE];
+    uint8_t *data;          // flat buffer: recv_queue_size * block_size bytes
+    uint16_t *lengths;      // array, size = recv_queue_size
+    uint8_t *from_port;     // array, size = recv_queue_size
     uint8_t head;
     uint8_t tail;
     uint8_t count;
+    uint8_t capacity;       // recv_queue_size
+    uint16_t block_size;    // HEADER_SIZE + frag_size
 } route_recv_queue_t;
 
 // ============ Statistics ============
@@ -236,60 +184,131 @@ typedef struct {
 
 // ============ Layer Callback Types ============
 
-// Router 层：帧送达本机时调用
 typedef void (*route_router_deliver_cb_t)(route_instance_t *inst,
     const route_header_t *hdr, const uint8_t *payload, uint16_t payload_len);
 
-// Frag 层：重组完成时调用
 typedef void (*route_frag_complete_cb_t)(route_instance_t *inst,
     const route_header_t *hdr, const uint8_t *data, uint16_t len);
 
-// 通用下层发送接口
 typedef int (*route_lower_send_t)(route_instance_t *inst,
     const route_header_t *hdr, const uint8_t *payload, uint16_t payload_len);
+
+// ============ Config ============
+
+typedef struct {
+    const route_os_t *os;
+
+    // Capacity parameters (all required, no defaults)
+    uint8_t max_ports;
+    uint8_t max_nodes;
+    uint8_t max_concurrent_trans;
+    uint8_t max_reasm_slots;
+    uint8_t pool_block_count;
+    uint8_t seen_table_size;
+    uint8_t recv_queue_size;
+    uint16_t max_payload;
+    uint16_t frag_size;
+    uint8_t max_frags_per_msg;      // typically (max_payload / frag_size) + 1
+
+    // Timing parameters
+    uint32_t ack_timeout_ms;
+    uint8_t ack_retry_max;
+    uint8_t default_ttl;
+    uint32_t seen_expire_ms;
+    uint32_t reasm_timeout_ms;
+
+    // External storage (all required, caller-allocated)
+    route_port_t *ports;                    // [max_ports]
+    route_entry_t *route_table;             // [max_nodes]
+    route_seen_entry_t *seen_table;         // [seen_table_size]
+    route_reasm_ctx_t *reasm_slots;         // [max_reasm_slots]
+    uint8_t *reasm_buf;                     // [max_payload]
+
+    // Reassembly fragment pointer arrays: max_reasm_slots * max_frags_per_msg pointers
+    uint8_t **reasm_frag_ptrs;              // [max_reasm_slots * max_frags_per_msg]
+    uint8_t *reasm_frag_lens;              // [max_reasm_slots * max_frags_per_msg]
+
+    route_pending_ack_t *pending_acks;      // [max_concurrent_trans]
+    uint8_t *pending_ack_data;              // [max_concurrent_trans * frag_size]
+    transaction_t *trans_table;             // [max_concurrent_trans]
+
+    // Memory pool storage
+    uint8_t **pool_free_list;               // [pool_block_count]
+    uint8_t *pool_storage;                  // [pool_block_count * (ROUTE_HEADER_SIZE + frag_size)]
+
+    // Receive queue storage
+    uint8_t *recv_queue_data;               // [recv_queue_size * (ROUTE_HEADER_SIZE + frag_size)]
+    uint16_t *recv_queue_lengths;           // [recv_queue_size]
+    uint8_t *recv_queue_from_port;          // [recv_queue_size]
+} route_config_t;
 
 // ============ Instance ============
 
 struct route_instance {
     uint8_t node_id;
-    uint8_t seq_counter;       // transaction/frag seq
-    uint8_t bcast_seq_counter; // broadcast 独立 seq，避免与 transaction 共用
+    uint8_t seq_counter;
+    uint8_t bcast_seq_counter;
 
     const route_os_t *os;
 
-    route_port_t ports[ROUTE_MAX_PORTS];
+    // Effective capacities
+    uint8_t cfg_max_ports;
+    uint8_t cfg_max_nodes;
+    uint8_t cfg_max_concurrent_trans;
+    uint8_t cfg_max_reasm_slots;
+    uint8_t cfg_pool_block_count;
+    uint8_t cfg_seen_table_size;
+    uint8_t cfg_recv_queue_size;
+    uint16_t cfg_max_payload;
+    uint16_t cfg_frag_size;
+    uint16_t cfg_block_size;        // ROUTE_HEADER_SIZE + cfg_frag_size
+    uint8_t cfg_max_frags_per_msg;
+    uint32_t cfg_ack_timeout_ms;
+    uint8_t cfg_ack_retry_max;
+    uint8_t cfg_default_ttl;
+    uint32_t cfg_seen_expire_ms;
+    uint32_t cfg_reasm_timeout_ms;
+
+    // Port layer (external storage)
+    route_port_t *ports;
     uint8_t port_count;
 
-    route_entry_t route_table[ROUTE_MAX_NODES];
+    // Routing layer (external storage)
+    route_entry_t *route_table;
     uint8_t route_count;
-    route_seen_entry_t seen_table[ROUTE_SEEN_TABLE_SIZE];
+    route_seen_entry_t *seen_table;
     uint8_t seen_index;
-    uint32_t current_ms;  // updated by route_tick
+    uint32_t current_ms;
 
-    route_reasm_ctx_t reasm_slots[ROUTE_MAX_REASM_SLOTS];
-    uint8_t reasm_buf[ROUTE_MAX_PAYLOAD];  // per-instance reassembly buffer
+    // Fragmentation/reassembly (external storage)
+    route_reasm_ctx_t *reasm_slots;
+    uint8_t *reasm_buf;
 
+    // Reliability (external storage)
     const reliability_strategy_t *reliability;
-    route_pending_ack_t pending_acks[ROUTE_MAX_CONCURRENT_TRANSACTIONS];
+    route_pending_ack_t *pending_acks;
 
-    transaction_t trans_table[ROUTE_MAX_CONCURRENT_TRANSACTIONS];
+    // Transaction (external storage)
+    transaction_t *trans_table;
     void *trans_mutex;
 
+    // Receive queue
     route_recv_queue_t recv_queue;
     void (*on_recv_cb)(route_instance_t *inst, uint8_t src, uint8_t trans_id,
                        const uint8_t *data, uint16_t len);
 
-    // 层间回调
-    route_router_deliver_cb_t router_deliver_cb;   // router -> 上层
-    route_frag_complete_cb_t frag_complete_cb;     // frag -> 上层
-    route_lower_send_t frag_lower_send;           // frag 发送用（注入 router_send）
-    route_lower_send_t reliability_lower_send;    // reliability 重传用
+    // Layer callbacks
+    route_router_deliver_cb_t router_deliver_cb;
+    route_frag_complete_cb_t frag_complete_cb;
+    route_lower_send_t frag_lower_send;
+    route_lower_send_t reliability_lower_send;
     int (*transaction_lower_send)(route_instance_t *inst, uint8_t dest,
-        uint8_t trans_id, uint8_t seq, const uint8_t *data, uint16_t len);  // transaction -> frag
+        uint8_t trans_id, uint8_t seq, const uint8_t *data, uint16_t len);
 
+    // Memory pool
     route_pool_t pool;
-    uint8_t pool_storage[ROUTE_POOL_BLOCK_COUNT * ROUTE_BLOCK_SIZE];
 
+    // Statistics
     route_stats_t stats;
 };
 

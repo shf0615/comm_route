@@ -31,11 +31,11 @@ static int route_router_parse_frame(const uint8_t *frame, uint16_t frame_len,
     uint16_t crc_calc = route_crc16(frame, frame_len - 2);
     uint16_t crc_recv = ((uint16_t)frame[frame_len - 2] << 8) | frame[frame_len - 1];
     if (crc_calc != crc_recv) {
-        return ROUTE_ERR_PARAM;  // CRC error signaled via return; stats updated by caller
+        return ROUTE_ERR_PARAM;
     }
     hdr->src = frame[0];
     hdr->dst = frame[1];
-    hdr->type = (route_frame_type_t)frame[2];
+    hdr->type = frame[2];
     hdr->trans_id = frame[3];
     hdr->seq = frame[4];
     hdr->ttl = frame[5];
@@ -47,14 +47,12 @@ static int route_router_parse_frame(const uint8_t *frame, uint16_t frame_len,
 }
 
 static int route_seen_check_and_add(route_instance_t *inst, uint8_t src_id, uint8_t seq,
-                                    uint8_t trans_id, route_frame_type_t type) {
+                                    uint8_t trans_id, uint8_t type) {
     uint32_t now = inst->current_ms;
 
-    // Expire old entries and check for duplicates
-    for (uint8_t i = 0; i < ROUTE_SEEN_TABLE_SIZE; i++) {
+    for (uint8_t i = 0; i < inst->cfg_seen_table_size; i++) {
         if (!inst->seen_table[i].valid) continue;
-        // Age out expired entries
-        if ((int32_t)(now - inst->seen_table[i].timestamp_ms) >= (int32_t)ROUTE_SEEN_EXPIRE_MS) {
+        if ((int32_t)(now - inst->seen_table[i].timestamp_ms) >= (int32_t)inst->cfg_seen_expire_ms) {
             inst->seen_table[i].valid = 0;
             continue;
         }
@@ -64,14 +62,13 @@ static int route_seen_check_and_add(route_instance_t *inst, uint8_t src_id, uint
             return 1;
         }
     }
-    // Only dedup REQUEST frames (RESPONSE 由 transaction 状态机防重复)
     if (type == ROUTE_TYPE_REQUEST) {
         inst->seen_table[inst->seen_index].src_id = src_id;
         inst->seen_table[inst->seen_index].seq = seq;
         inst->seen_table[inst->seen_index].trans_id = trans_id;
         inst->seen_table[inst->seen_index].valid = 1;
         inst->seen_table[inst->seen_index].timestamp_ms = now;
-        inst->seen_index = (inst->seen_index + 1) % ROUTE_SEEN_TABLE_SIZE;
+        inst->seen_index = (inst->seen_index + 1) % inst->cfg_seen_table_size;
     }
     return 0;
 }
@@ -114,7 +111,6 @@ static int route_router_handle_frame(route_instance_t *inst, const uint8_t *fram
         return ROUTE_ERR_TIMEOUT;
     }
 
-    // 去重检查（REQUEST 帧，包括广播）
     if (hdr.type == ROUTE_TYPE_REQUEST) {
         if (route_seen_check_and_add(inst, hdr.src, hdr.seq, hdr.trans_id, hdr.type)) {
             inst->stats.drop_duplicate++;
@@ -124,21 +120,23 @@ static int route_router_handle_frame(route_instance_t *inst, const uint8_t *fram
 
     if (hdr.dst == ROUTE_BROADCAST_ADDR) {
         hdr.ttl--;
-        uint8_t fwd_frame[ROUTE_BLOCK_SIZE];
+        uint8_t fwd_frame[inst->cfg_block_size];
         uint16_t fwd_len;
         route_router_build_frame(&hdr, payload, payload_len, fwd_frame, &fwd_len);
         for (uint8_t i = 0; i < inst->port_count; i++) {
             if (inst->ports[i].port_id != from_port) {
-                inst->ports[i].send(inst->ports[i].port_id, fwd_frame, fwd_len);
+                if (inst->ports[i].send(inst->ports[i].port_id, fwd_frame, fwd_len) == ROUTE_OK) {
+                    inst->stats.tx_packets++;
+                    inst->stats.tx_bytes += fwd_len;
+                }
             }
         }
-        // 返回给上层的 hdr 保留原始 ttl
         hdr.ttl++;
         *out_hdr = hdr;
         *out_payload = payload;
         *out_payload_len = payload_len;
         inst->stats.rx_packets++;
-        inst->stats.rx_bytes += payload_len;
+        inst->stats.rx_bytes += ROUTE_HEADER_SIZE + payload_len;
         return 1;
     }
 
@@ -147,11 +145,11 @@ static int route_router_handle_frame(route_instance_t *inst, const uint8_t *fram
         *out_payload = payload;
         *out_payload_len = payload_len;
         inst->stats.rx_packets++;
-        inst->stats.rx_bytes += payload_len;
+        inst->stats.rx_bytes += ROUTE_HEADER_SIZE + payload_len;
         return 1;
     }
 
-    // 转发：先查路由再构建帧
+    // 转发
     const route_entry_t *entry = route_lookup(inst, hdr.dst);
     if (entry == NULL) {
         inst->stats.drop_no_route++;
@@ -159,23 +157,30 @@ static int route_router_handle_frame(route_instance_t *inst, const uint8_t *fram
     }
 
     hdr.ttl--;
-    uint8_t fwd_frame[ROUTE_BLOCK_SIZE];
+    uint8_t fwd_frame[inst->cfg_block_size];
     uint16_t fwd_len;
     route_router_build_frame(&hdr, payload, payload_len, fwd_frame, &fwd_len);
-    return route_send_to_port(inst, entry->port_id, fwd_frame, fwd_len);
+    int fwd_rc = route_send_to_port(inst, entry->port_id, fwd_frame, fwd_len);
+    if (fwd_rc == ROUTE_OK) {
+        inst->stats.tx_packets++;
+        inst->stats.tx_bytes += fwd_len;
+    }
+    return fwd_rc;
 }
 
 int route_router_send(route_instance_t *inst, const route_header_t *hdr,
                       const uint8_t *payload, uint16_t payload_len) {
-    uint8_t frame[ROUTE_BLOCK_SIZE];
+    uint8_t frame[inst->cfg_block_size];
     uint16_t frame_len;
     route_router_build_frame(hdr, payload, payload_len, frame, &frame_len);
 
     if (hdr->dst == ROUTE_BROADCAST_ADDR) {
+        int last_err = ROUTE_OK;
         for (uint8_t i = 0; i < inst->port_count; i++) {
-            inst->ports[i].send(inst->ports[i].port_id, frame, frame_len);
+            int rc = inst->ports[i].send(inst->ports[i].port_id, frame, frame_len);
+            if (rc != ROUTE_OK) last_err = rc;
         }
-        return ROUTE_OK;
+        return last_err;
     }
 
     const route_entry_t *entry = route_lookup(inst, hdr->dst);
@@ -191,7 +196,7 @@ void route_router_set_deliver_cb(route_instance_t *inst, route_router_deliver_cb
 }
 
 void route_router_poll(route_instance_t *inst) {
-    uint8_t frame[ROUTE_BLOCK_SIZE];
+    uint8_t frame[inst->cfg_block_size];
     uint16_t frame_len;
     uint8_t from_port;
 
@@ -203,7 +208,11 @@ void route_router_poll(route_instance_t *inst) {
         int delivered = route_router_handle_frame(inst, frame, frame_len, from_port,
                                                   &hdr, &payload, &payload_len);
         if (delivered == 1 && inst->router_deliver_cb) {
-            inst->router_deliver_cb(inst, &hdr, payload, payload_len);
+            uint8_t payload_copy[inst->cfg_frag_size];
+            if (payload_len > 0 && payload != NULL) {
+                memcpy(payload_copy, payload, payload_len);
+            }
+            inst->router_deliver_cb(inst, &hdr, payload_len > 0 ? payload_copy : NULL, payload_len);
         }
     }
 }

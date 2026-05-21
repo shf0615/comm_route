@@ -7,6 +7,6 @@
 void route_reliability_set_lower_send(route_instance_t *inst, route_lower_send_t send_fn);
 
 const reliability_strategy_t *route_reliability_e2e_strategy(void);
-int route_reliability_send_ack(route_instance_t *inst, uint8_t dest, uint8_t seq);
+int route_reliability_send_ack(route_instance_t *inst, uint8_t dest, uint8_t seq, uint8_t frag_idx);
 
 #endif // ROUTE_RELIABILITY_H
