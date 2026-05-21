@@ -15,6 +15,7 @@ typedef enum {
 typedef struct {
     uint8_t state;
     uint8_t dest_id;
+    uint8_t expected_seq;
     uint32_t timeout_ms;
     uint32_t timeout_duration;
     void (*callback)(int result, const uint8_t *data, uint16_t len, void *user_data);
@@ -53,6 +54,7 @@ typedef struct {
 
     transaction_t *trans_table;
     uint8_t seq_counter;
+    uint8_t shutdown;
     void *mutex;
 
     int (*lower_send)(void *ctx, uint8_t dest, uint8_t trans_id,
@@ -82,7 +84,8 @@ int route_transaction_reply(route_transaction_ctx_t *ctx, uint8_t dest, uint8_t 
 
 // 从 frag complete_cb 调用
 void route_transaction_on_response(route_transaction_ctx_t *ctx, uint8_t src,
-                                   uint8_t trans_id, const uint8_t *data, uint16_t len);
+                                   uint8_t trans_id, uint8_t seq,
+                                   const uint8_t *data, uint16_t len);
 
 void route_transaction_tick(route_transaction_ctx_t *ctx, uint32_t now_ms);
 

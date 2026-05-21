@@ -85,7 +85,7 @@ typedef struct {
     uint8_t seen_index;
     uint8_t cfg_seen_table_size;
     uint32_t cfg_seen_expire_ms;
-    uint32_t current_ms;
+    volatile uint32_t current_ms;
 
     route_recv_queue_t recv_queue;
 
@@ -132,5 +132,8 @@ void route_router_poll(route_router_ctx_t *ctx);
 
 // 更新时间（驱动 seen_table 过期）
 void route_router_tick(route_router_ctx_t *ctx, uint32_t now_ms);
+
+static inline uint8_t route_router_get_default_ttl(const route_router_ctx_t *ctx) { return ctx->cfg_default_ttl; }
+static inline uint16_t route_router_get_frag_size(const route_router_ctx_t *ctx) { return ctx->cfg_frag_size; }
 
 #endif // ROUTE_ROUTER_H

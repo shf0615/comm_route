@@ -150,11 +150,21 @@ static int router_seen_check_and_add(route_router_ctx_t *ctx, uint8_t src_id, ui
             return 1;  // duplicate
         }
     }
-    ctx->seen_table[ctx->seen_index].src_id = src_id;
-    ctx->seen_table[ctx->seen_index].seq = seq;
-    ctx->seen_table[ctx->seen_index].valid = 1;
-    ctx->seen_table[ctx->seen_index].timestamp_ms = now;
-    ctx->seen_index = (ctx->seen_index + 1) % ctx->cfg_seen_table_size;
+    // 优先找无效槽
+    uint8_t write_idx = ctx->seen_index;
+    for (uint8_t i = 0; i < ctx->cfg_seen_table_size; i++) {
+        if (!ctx->seen_table[i].valid) {
+            write_idx = i;
+            break;
+        }
+    }
+    ctx->seen_table[write_idx].src_id = src_id;
+    ctx->seen_table[write_idx].seq = seq;
+    ctx->seen_table[write_idx].valid = 1;
+    ctx->seen_table[write_idx].timestamp_ms = now;
+    if (write_idx == ctx->seen_index) {
+        ctx->seen_index = (ctx->seen_index + 1) % ctx->cfg_seen_table_size;
+    }
     return 0;
 }
 
@@ -183,6 +193,7 @@ static int router_handle_frame(route_router_ctx_t *ctx, const uint8_t *frame,
             return 0;
         }
         // 转发到其他端口
+        uint8_t orig_ttl = hdr.ttl;
         hdr.ttl--;
         uint16_t fwd_len = ctx->codec->encode(&hdr, payload, payload_len, ctx->fwd_frame_buf);
         for (uint8_t i = 0; i < ctx->port_count; i++) {
@@ -193,7 +204,7 @@ static int router_handle_frame(route_router_ctx_t *ctx, const uint8_t *frame,
             }
         }
         // 送达本机
-        hdr.ttl++;
+        hdr.ttl = orig_ttl;
         if (ctx->stats) { ctx->stats->rx_packets++; ctx->stats->rx_bytes += ROUTE_HEADER_SIZE + payload_len; }
         if (ctx->deliver_cb) {
             ctx->deliver_cb(ctx->deliver_ctx, &hdr, payload, payload_len);
@@ -236,6 +247,10 @@ int route_router_send(route_router_ctx_t *ctx, const route_header_t *hdr,
         int last_err = ROUTE_OK;
         for (uint8_t i = 0; i < ctx->port_count; i++) {
             int rc = ctx->ports[i].send(ctx->ports[i].port_id, ctx->send_frame_buf, frame_len);
+            if (rc == ROUTE_OK && ctx->stats) {
+                ctx->stats->tx_packets++;
+                ctx->stats->tx_bytes += frame_len;
+            }
             if (rc != ROUTE_OK) last_err = rc;
         }
         return last_err;

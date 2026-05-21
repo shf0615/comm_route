@@ -13,7 +13,7 @@ typedef struct {
     route_transaction_ctx_t *transaction;   // 可选，NULL = 无请求-响应
 
     uint8_t node_id;
-    uint8_t bcast_seq_counter;
+    uint16_t bcast_seq_counter;
 
     void (*on_recv_cb)(void *ctx, uint8_t src, uint8_t trans_id,
                        const uint8_t *data, uint16_t len);
@@ -46,5 +46,11 @@ int route_stack_reply(route_stack_t *stack, uint8_t dest, uint8_t trans_id,
 int route_stack_broadcast(route_stack_t *stack, const uint8_t *data, uint16_t len);
 
 int route_stack_input(route_stack_t *stack, const uint8_t *data, uint16_t len, uint8_t port_id);
+
+// Helper macro: wire stack and set recv callback in one call
+#define ROUTE_STACK_WIRE_AND_CB(stack, router, frag, trans, cb, ctx) do { \
+    route_stack_wire(&(stack), (router), (frag), (trans));               \
+    route_stack_set_recv_cb(&(stack), (cb), (ctx));                      \
+} while(0)
 
 #endif // ROUTE_STACK_H

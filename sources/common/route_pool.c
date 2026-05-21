@@ -38,6 +38,7 @@ void route_pool_free(route_pool_t *pool, uint8_t *block) {
     if (block == NULL) return;
     ptrdiff_t offset = block - pool->storage;
     if (offset < 0) return;
+    if (offset % pool->block_size != 0) return;
     uint16_t idx = (uint16_t)(offset / pool->block_size);
     if (idx >= pool->block_count) return;
     uint8_t w = idx / 32;

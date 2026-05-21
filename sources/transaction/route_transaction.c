@@ -36,12 +36,14 @@ int route_transaction_init(route_transaction_ctx_t *ctx, const route_transaction
     if (ctx->os) {
         ctx->mutex = ctx->os->mutex_create();
     }
+    ctx->shutdown = 0;
 
     return ROUTE_OK;
 }
 
 void route_transaction_deinit(route_transaction_ctx_t *ctx) {
     if (ctx == NULL) return;
+    ctx->shutdown = 1;
 
     // 在锁内收集、设状态，锁外通知
     trans_lock(ctx);
@@ -102,6 +104,7 @@ int route_transaction_send_async(route_transaction_ctx_t *ctx, uint8_t dest,
     t->timeout_duration = ctx->cfg_default_timeout_ms;
     t->sync_sem = NULL;
     uint8_t seq = ctx->seq_counter++;
+    t->expected_seq = seq;
     trans_unlock(ctx);
 
     int rc = ctx->lower_send ?
@@ -142,6 +145,7 @@ int route_transaction_send_sync(route_transaction_ctx_t *ctx, uint8_t dest,
     t->timeout_duration = timeout_ms;
     t->sync_sem = ctx->os->sem_create();
     uint8_t seq = ctx->seq_counter++;
+    t->expected_seq = seq;
     trans_unlock(ctx);
 
     int rc = ctx->lower_send ?
@@ -186,13 +190,15 @@ int route_transaction_reply(route_transaction_ctx_t *ctx, uint8_t dest, uint8_t 
 // ============ Response Handling ============
 
 void route_transaction_on_response(route_transaction_ctx_t *ctx, uint8_t src,
-                                   uint8_t trans_id, const uint8_t *data, uint16_t len) {
+                                   uint8_t trans_id, uint8_t seq,
+                                   const uint8_t *data, uint16_t len) {
+    if (ctx->shutdown) return;
     if (trans_id >= ctx->cfg_max_concurrent_trans) return;
 
     trans_lock(ctx);
     transaction_t *t = &ctx->trans_table[trans_id];
 
-    if (t->state != TRANS_STATE_WAITING || t->dest_id != src) {
+    if (t->state != TRANS_STATE_WAITING || t->dest_id != src || t->expected_seq != seq) {
         if (ctx->stats) ctx->stats->drop_duplicate++;
         trans_unlock(ctx);
         return;
@@ -221,9 +227,12 @@ void route_transaction_on_response(route_transaction_ctx_t *ctx, uint8_t src,
 // ============ Tick ============
 
 void route_transaction_tick(route_transaction_ctx_t *ctx, uint32_t now_ms) {
+    if (ctx->shutdown) return;
+
     // 收集超时条目，锁外统一通知，避免回调死锁
-    void (*timeout_cbs[8])(int, const uint8_t *, uint16_t, void *);
-    void *timeout_uds[8];
+    uint8_t max = ctx->cfg_max_concurrent_trans;
+    void (*timeout_cbs[max])(int, const uint8_t *, uint16_t, void *);
+    void *timeout_uds[max];
     uint8_t timeout_count = 0;
 
     trans_lock(ctx);
@@ -241,11 +250,9 @@ void route_transaction_tick(route_transaction_ctx_t *ctx, uint32_t now_ms) {
         if (ctx->stats) ctx->stats->trans_timeouts++;
 
         if (t->callback) {
-            if (timeout_count < 8) {
-                timeout_cbs[timeout_count] = t->callback;
-                timeout_uds[timeout_count] = t->user_data;
-                timeout_count++;
-            }
+            timeout_cbs[timeout_count] = t->callback;
+            timeout_uds[timeout_count] = t->user_data;
+            timeout_count++;
             t->state = TRANS_STATE_IDLE;
         } else if (t->sync_sem) {
             t->result = ROUTE_ERR_TIMEOUT;

@@ -11,7 +11,7 @@ static void stack_router_deliver(void *ctx, const route_header_t *hdr,
     } else {
         // 无 frag 层，直接送达
         if (hdr->type == ROUTE_TYPE_RESPONSE && stack->transaction) {
-            route_transaction_on_response(stack->transaction, hdr->src, hdr->trans_id, payload, payload_len);
+            route_transaction_on_response(stack->transaction, hdr->src, hdr->trans_id, hdr->seq, payload, payload_len);
         } else if (stack->on_recv_cb) {
             stack->on_recv_cb(stack->on_recv_ctx, hdr->src, hdr->trans_id, payload, payload_len);
         }
@@ -28,7 +28,7 @@ static void stack_frag_complete(void *ctx, const route_header_t *hdr,
                                 const uint8_t *data, uint16_t len) {
     route_stack_t *stack = (route_stack_t *)ctx;
     if (hdr->type == ROUTE_TYPE_RESPONSE && stack->transaction) {
-        route_transaction_on_response(stack->transaction, hdr->src, hdr->trans_id, data, len);
+        route_transaction_on_response(stack->transaction, hdr->src, hdr->trans_id, hdr->seq, data, len);
     } else if (stack->on_recv_cb) {
         stack->on_recv_cb(stack->on_recv_ctx, hdr->src, hdr->trans_id, data, len);
     }
@@ -48,7 +48,7 @@ static int stack_trans_to_frag(void *ctx, uint8_t dest, uint8_t trans_id,
         .type = type,
         .trans_id = trans_id,
         .seq = seq,
-        .ttl = stack->router->cfg_default_ttl,
+        .ttl = route_router_get_default_ttl(stack->router),
         .frag_idx = 0,
         .frag_total = 1,
     };
@@ -61,11 +61,11 @@ int route_stack_wire(route_stack_t *stack, route_router_ctx_t *router,
                      route_frag_ctx_t *frag, route_transaction_ctx_t *transaction) {
     if (stack == NULL || router == NULL) return ROUTE_ERR_PARAM;
 
-    memset(stack, 0, sizeof(*stack));
     stack->router = router;
     stack->frag = frag;
     stack->transaction = transaction;
     stack->node_id = router->node_id;
+    stack->bcast_seq_counter = 0;
 
     // Router → stack
     route_router_set_deliver_cb(router, stack_router_deliver, stack);
@@ -131,15 +131,15 @@ int route_stack_reply(route_stack_t *stack, uint8_t dest, uint8_t trans_id,
 }
 
 int route_stack_broadcast(route_stack_t *stack, const uint8_t *data, uint16_t len) {
-    if (len > stack->router->cfg_frag_size) return ROUTE_ERR_PARAM;
-    uint8_t seq = stack->bcast_seq_counter++;
+    if (len > route_router_get_frag_size(stack->router)) return ROUTE_ERR_PARAM;
+    uint8_t seq = (uint8_t)(stack->bcast_seq_counter++ & 0xFF);
     route_header_t hdr = {
         .src = stack->node_id,
         .dst = ROUTE_BROADCAST_ADDR,
         .type = ROUTE_TYPE_REQUEST,
         .trans_id = 0,
         .seq = seq,
-        .ttl = stack->router->cfg_default_ttl,
+        .ttl = route_router_get_default_ttl(stack->router),
         .frag_idx = 0,
         .frag_total = 1,
     };

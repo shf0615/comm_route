@@ -126,13 +126,15 @@ static int reliability_register(route_frag_ctx_t *ctx, uint8_t dest, uint8_t seq
     return ROUTE_ERR_FULL;
 }
 
-static void reliability_on_ack(route_frag_ctx_t *ctx, uint8_t src, uint8_t seq) {
+static void reliability_on_ack(route_frag_ctx_t *ctx, uint8_t src, uint8_t seq, uint8_t frag_idx) {
     if (!ctx->reliability_enabled) return;
     for (uint8_t i = 0; i < ctx->cfg_max_pending_acks; i++) {
         if (ctx->pending_acks[i].active &&
             ctx->pending_acks[i].dest_id == src &&
-            ctx->pending_acks[i].seq == seq) {
+            ctx->pending_acks[i].seq == seq &&
+            ctx->pending_acks[i].frag_idx == frag_idx) {
             ctx->pending_acks[i].active = 0;
+            return;
         }
     }
 }
@@ -182,7 +184,8 @@ static void reliability_tick(route_frag_ctx_t *ctx, uint32_t now_ms) {
             if (ctx->stats) ctx->stats->retransmissions++;
         }
         pa->retry_count++;
-        pa->next_retry_ms = now_ms + ctx->cfg_ack_timeout_ms;
+        uint8_t shift = pa->retry_count < 3 ? pa->retry_count : 3;
+        pa->next_retry_ms = now_ms + ctx->cfg_ack_timeout_ms * (1u << shift);
     }
 }
 
@@ -256,6 +259,7 @@ static int frag_reassemble(route_frag_ctx_t *ctx, const route_header_t *hdr,
 
     uint8_t *blk = route_pool_alloc(&ctx->pool);
     if (blk == NULL) {
+        free_reasm_slot(ctx, slot);
         if (ctx->stats) ctx->stats->drop_no_mem++;
         return ROUTE_ERR_NO_MEM;
     }
@@ -309,13 +313,15 @@ int route_frag_send(route_frag_ctx_t *ctx, uint8_t dest, uint8_t trans_id,
             .frag_total = frag_total,
         };
 
-        int rc = ctx->lower_send(ctx->lower_send_ctx, &hdr, &data[offset], chunk);
+        const uint8_t *chunk_ptr = (data != NULL && chunk > 0) ? &data[offset] : NULL;
+
+        int rc = ctx->lower_send(ctx->lower_send_ctx, &hdr, chunk_ptr, chunk);
         if (rc != ROUTE_OK) return rc;
         if (ctx->stats) { ctx->stats->tx_packets++; ctx->stats->tx_bytes += ROUTE_HEADER_SIZE + chunk; }
 
         // 注册 reliability 跟踪（需要锁保护 pending_acks）
         frag_lock(ctx);
-        int rel_rc = reliability_register(ctx, dest, seq, i, frag_total, type, trans_id, &data[offset], chunk);
+        int rel_rc = reliability_register(ctx, dest, seq, i, frag_total, type, trans_id, chunk_ptr, chunk);
         frag_unlock(ctx);
         if (rel_rc == ROUTE_ERR_FULL && ctx->stats) {
             ctx->stats->drop_no_mem++;
@@ -329,7 +335,7 @@ void route_frag_input(route_frag_ctx_t *ctx, const route_header_t *hdr,
     // ACK 帧 → 清除对应 pending_ack
     if (hdr->type == ROUTE_TYPE_ACK) {
         frag_lock(ctx);
-        reliability_on_ack(ctx, hdr->src, hdr->seq);
+        reliability_on_ack(ctx, hdr->src, hdr->seq, hdr->frag_idx);
         frag_unlock(ctx);
         return;
     }
