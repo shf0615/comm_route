@@ -48,6 +48,9 @@
 #ifndef ROUTE_REASM_TIMEOUT_MS
 #define ROUTE_REASM_TIMEOUT_MS            5000
 #endif
+#ifndef ROUTE_RECV_QUEUE_SIZE
+#define ROUTE_RECV_QUEUE_SIZE             16
+#endif
 
 // ============ Constants ============
 
@@ -101,7 +104,6 @@ typedef struct {
 
 typedef struct {
     uint8_t dest_id;
-    uint8_t next_hop;
     uint8_t port_id;
 } route_entry_t;
 
@@ -157,7 +159,6 @@ typedef struct {
 typedef enum {
     TRANS_STATE_IDLE = 0,
     TRANS_STATE_WAITING,
-    TRANS_STATE_DONE,
 } trans_state_t;
 
 typedef struct {
@@ -196,16 +197,11 @@ typedef struct {
 // ============ Memory Pool ============
 
 typedef struct {
-    uint8_t *buffer;
     uint8_t *free_list[ROUTE_POOL_BLOCK_COUNT];
     uint8_t free_count;
 } route_pool_t;
 
 // ============ Receive Queue ============
-
-#ifndef ROUTE_RECV_QUEUE_SIZE
-#define ROUTE_RECV_QUEUE_SIZE  16
-#endif
 
 typedef struct {
     uint8_t data[ROUTE_RECV_QUEUE_SIZE][ROUTE_BLOCK_SIZE];

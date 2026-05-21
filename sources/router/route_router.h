@@ -10,7 +10,9 @@ int route_router_parse_frame(const uint8_t *frame, uint16_t frame_len,
                              route_header_t *hdr, const uint8_t **payload, uint16_t *payload_len);
 
 int route_router_handle_frame(route_instance_t *inst, const uint8_t *frame,
-                              uint16_t frame_len, uint8_t from_port);
+                              uint16_t frame_len, uint8_t from_port,
+                              route_header_t *out_hdr, const uint8_t **out_payload,
+                              uint16_t *out_payload_len);
 
 int route_router_send(route_instance_t *inst, const route_header_t *hdr,
                       const uint8_t *payload, uint16_t payload_len);

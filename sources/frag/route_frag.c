@@ -84,7 +84,10 @@ int route_frag_recv(route_instance_t *inst, const route_header_t *hdr,
 
     if (hdr->frag_total == 1) {
         if (payload_len > ROUTE_MAX_PAYLOAD) return ROUTE_ERR_PARAM;
-        memcpy(out_buf, payload, payload_len);
+        if (payload_len > 0) {
+            if (payload == NULL) return ROUTE_ERR_PARAM;
+            memcpy(out_buf, payload, payload_len);
+        }
         *out_len = payload_len;
         *out_hdr = *hdr;
         return 1;

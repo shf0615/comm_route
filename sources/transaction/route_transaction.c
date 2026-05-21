@@ -6,11 +6,6 @@ void route_transaction_set_lower_send(route_instance_t *inst, route_transaction_
     inst->transaction_lower_send = send_fn;
 }
 
-void route_transaction_set_reply_send(route_instance_t *inst, route_lower_send_t send_fn) {
-    (void)inst; (void)send_fn;
-    // reply_send stored via reliability_lower_send (shared)
-}
-
 static int alloc_transaction(route_instance_t *inst) {
     for (uint8_t i = 0; i < ROUTE_MAX_CONCURRENT_TRANSACTIONS; i++) {
         if (inst->trans_table[i].state == TRANS_STATE_IDLE) {

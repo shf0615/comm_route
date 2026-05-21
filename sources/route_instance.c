@@ -100,6 +100,9 @@ void route_destroy(route_instance_t *inst) {
     }
 
     // 超时所有活跃 transaction（唤醒阻塞的同步调用者）
+    if (inst->os && inst->trans_mutex) {
+        inst->os->mutex_lock(inst->trans_mutex);
+    }
     for (uint8_t i = 0; i < ROUTE_MAX_CONCURRENT_TRANSACTIONS; i++) {
         transaction_t *t = &inst->trans_table[i];
         if (t->state == TRANS_STATE_WAITING) {
@@ -112,10 +115,11 @@ void route_destroy(route_instance_t *inst) {
             t->state = TRANS_STATE_IDLE;
         }
     }
-
     if (inst->os && inst->trans_mutex) {
+        inst->os->mutex_unlock(inst->trans_mutex);
         inst->os->mutex_destroy(inst->trans_mutex);
     }
+
     for (uint8_t i = 0; i < ROUTE_MAX_INSTANCES; i++) {
         if (&instances[i] == inst) {
             instance_used[i] = 0;
