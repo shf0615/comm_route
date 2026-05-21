@@ -1,3 +1,11 @@
+/**
+ * 线程模型说明：
+ * - route_router_input: 可从 ISR 或任意线程调用（内部有 queue_lock 保护）
+ * - route_router_poll / route_router_send: 必须在同一线程（主循环）调用，
+ *   因为它们共享 send_frame_buf / fwd_frame_buf / rx_frame_buf
+ * - route_router_tick: 仅写 current_ms（volatile），可从定时器线程调用
+ * - stats 字段为非原子累加，多线程下可能丢失少量计数（诊断用途可接受）
+ */
 #include "route_router.h"
 #include "../common/route_crc.h"
 #include <string.h>

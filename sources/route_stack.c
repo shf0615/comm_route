@@ -132,7 +132,7 @@ int route_stack_reply(route_stack_t *stack, uint8_t dest, uint8_t trans_id,
 
 int route_stack_broadcast(route_stack_t *stack, const uint8_t *data, uint16_t len) {
     if (len > route_router_get_frag_size(stack->router)) return ROUTE_ERR_PARAM;
-    uint8_t seq = (uint8_t)(stack->bcast_seq_counter++ & 0xFF);
+    uint8_t seq = (uint8_t)(stack->bcast_seq_counter++);
     route_header_t hdr = {
         .src = stack->node_id,
         .dst = ROUTE_BROADCAST_ADDR,

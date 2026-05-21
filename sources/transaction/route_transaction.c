@@ -216,8 +216,9 @@ void route_transaction_on_response(route_transaction_ctx_t *ctx, uint8_t src,
         if (t->resp_buf && copy_len > 0) memcpy(t->resp_buf, data, copy_len);
         if (t->resp_len) *t->resp_len = copy_len;
         t->result = ROUTE_OK;
-        ctx->os->sem_post(t->sync_sem);
+        void *sem = t->sync_sem;
         trans_unlock(ctx);
+        ctx->os->sem_post(sem);
     } else {
         t->state = TRANS_STATE_IDLE;
         trans_unlock(ctx);
@@ -230,10 +231,12 @@ void route_transaction_tick(route_transaction_ctx_t *ctx, uint32_t now_ms) {
     if (ctx->shutdown) return;
 
     // 收集超时条目，锁外统一通知，避免回调死锁
-    uint8_t max = ctx->cfg_max_concurrent_trans;
-    void (*timeout_cbs[max])(int, const uint8_t *, uint16_t, void *);
-    void *timeout_uds[max];
+#define TRANS_TICK_MAX_BATCH 32
+    void (*timeout_cbs[TRANS_TICK_MAX_BATCH])(int, const uint8_t *, uint16_t, void *);
+    void *timeout_uds[TRANS_TICK_MAX_BATCH];
+    void *timeout_sems[TRANS_TICK_MAX_BATCH];
     uint8_t timeout_count = 0;
+    uint8_t sem_count = 0;
 
     trans_lock(ctx);
     for (uint8_t i = 0; i < ctx->cfg_max_concurrent_trans; i++) {
@@ -250,13 +253,17 @@ void route_transaction_tick(route_transaction_ctx_t *ctx, uint32_t now_ms) {
         if (ctx->stats) ctx->stats->trans_timeouts++;
 
         if (t->callback) {
-            timeout_cbs[timeout_count] = t->callback;
-            timeout_uds[timeout_count] = t->user_data;
-            timeout_count++;
+            if (timeout_count < TRANS_TICK_MAX_BATCH) {
+                timeout_cbs[timeout_count] = t->callback;
+                timeout_uds[timeout_count] = t->user_data;
+                timeout_count++;
+            }
             t->state = TRANS_STATE_IDLE;
         } else if (t->sync_sem) {
             t->result = ROUTE_ERR_TIMEOUT;
-            ctx->os->sem_post(t->sync_sem);
+            if (sem_count < TRANS_TICK_MAX_BATCH) {
+                timeout_sems[sem_count++] = t->sync_sem;
+            }
         } else {
             t->state = TRANS_STATE_IDLE;
         }
@@ -266,5 +273,9 @@ void route_transaction_tick(route_transaction_ctx_t *ctx, uint32_t now_ms) {
     // 锁外回调
     for (uint8_t i = 0; i < timeout_count; i++) {
         timeout_cbs[i](ROUTE_ERR_TIMEOUT, NULL, 0, timeout_uds[i]);
+    }
+    // 锁外 sem_post
+    for (uint8_t i = 0; i < sem_count; i++) {
+        ctx->os->sem_post(timeout_sems[i]);
     }
 }
