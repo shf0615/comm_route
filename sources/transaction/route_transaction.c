@@ -43,20 +43,40 @@ int route_transaction_init(route_transaction_ctx_t *ctx, const route_transaction
 void route_transaction_deinit(route_transaction_ctx_t *ctx) {
     if (ctx == NULL) return;
 
+    // 收集需要通知的 transaction，在锁外回调
+    typedef struct { void (*cb)(int, const uint8_t *, uint16_t, void *); void *ud; void *sem; } pending_notify_t;
+    pending_notify_t notify[255];  // max possible
+    uint8_t notify_count = 0;
+
     trans_lock(ctx);
     for (uint8_t i = 0; i < ctx->cfg_max_concurrent_trans; i++) {
         transaction_t *t = &ctx->trans_table[i];
         if (t->state == TRANS_STATE_WAITING || t->state == TRANS_STATE_SENDING) {
             if (t->callback) {
-                t->callback(ROUTE_ERR_TIMEOUT, NULL, 0, t->user_data);
+                notify[notify_count].cb = t->callback;
+                notify[notify_count].ud = t->user_data;
+                notify[notify_count].sem = NULL;
+                notify_count++;
             } else if (t->sync_sem && ctx->os) {
                 t->result = ROUTE_ERR_TIMEOUT;
-                ctx->os->sem_post(t->sync_sem);
+                notify[notify_count].cb = NULL;
+                notify[notify_count].ud = NULL;
+                notify[notify_count].sem = t->sync_sem;
+                notify_count++;
             }
             t->state = TRANS_STATE_IDLE;
         }
     }
     trans_unlock(ctx);
+
+    // 锁外执行回调和 sem_post
+    for (uint8_t i = 0; i < notify_count; i++) {
+        if (notify[i].cb) {
+            notify[i].cb(ROUTE_ERR_TIMEOUT, NULL, 0, notify[i].ud);
+        } else if (notify[i].sem && ctx->os) {
+            ctx->os->sem_post(notify[i].sem);
+        }
+    }
 
     if (ctx->os && ctx->mutex) {
         ctx->os->mutex_destroy(ctx->mutex);
@@ -70,10 +90,10 @@ int route_transaction_send_async(route_transaction_ctx_t *ctx, uint8_t dest,
                                  const uint8_t *data, uint16_t len,
                                  void (*cb)(int result, const uint8_t *data, uint16_t len, void *user_data),
                                  void *user_data) {
+    // Pre-fill slot fields before start_transaction sends
     trans_lock(ctx);
     int idx = alloc_transaction(ctx);
     if (idx < 0) { trans_unlock(ctx); return ROUTE_ERR_FULL; }
-
     transaction_t *t = &ctx->trans_table[idx];
     t->state = TRANS_STATE_SENDING;
     t->dest_id = dest;
@@ -82,7 +102,6 @@ int route_transaction_send_async(route_transaction_ctx_t *ctx, uint8_t dest,
     t->timeout_ms = 0;
     t->timeout_duration = ctx->cfg_default_timeout_ms;
     t->sync_sem = NULL;
-
     uint8_t seq = ctx->seq_counter++;
     trans_unlock(ctx);
 
@@ -111,7 +130,6 @@ int route_transaction_send_sync(route_transaction_ctx_t *ctx, uint8_t dest,
     trans_lock(ctx);
     int idx = alloc_transaction(ctx);
     if (idx < 0) { trans_unlock(ctx); return ROUTE_ERR_FULL; }
-
     transaction_t *t = &ctx->trans_table[idx];
     t->state = TRANS_STATE_SENDING;
     t->dest_id = dest;
@@ -124,7 +142,6 @@ int route_transaction_send_sync(route_transaction_ctx_t *ctx, uint8_t dest,
     t->timeout_ms = 0;
     t->timeout_duration = timeout_ms;
     t->sync_sem = ctx->os->sem_create();
-
     uint8_t seq = ctx->seq_counter++;
     trans_unlock(ctx);
 

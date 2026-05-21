@@ -36,29 +36,34 @@ typedef struct {
 // ============ Frag Config ============
 
 typedef struct {
-    uint8_t node_id;
-    uint16_t frag_size;
-    uint16_t max_payload;
-    uint8_t max_frags_per_msg;
-    uint8_t max_reasm_slots;
-    uint32_t reasm_timeout_ms;
-    uint8_t default_ttl;
+    route_reasm_ctx_t *slots;
+    uint8_t *buf;                       // [max_payload]
+    uint8_t **frag_ptrs;                // [max_reasm_slots * max_frags_per_msg]
+    uint8_t *frag_lens;                 // [max_reasm_slots * max_frags_per_msg]
+    uint8_t max_slots;
+    uint32_t timeout_ms;
+} route_reasm_config_t;
 
-    // Reliability (可选，设 0/NULL 禁用)
-    uint8_t max_pending_acks;
+typedef struct {
+    uint8_t max_pending_acks;           // 0 = 禁用 reliability
     uint32_t ack_timeout_ms;
     uint8_t ack_retry_max;
     route_pending_ack_t *pending_acks;
     uint8_t *pending_ack_data;          // [max_pending_acks * frag_size]
+} route_reliability_config_t;
 
-    // Reassembly storage
-    route_reasm_ctx_t *reasm_slots;
-    uint8_t *reasm_buf;                 // [max_payload]
-    uint8_t **reasm_frag_ptrs;          // [max_reasm_slots * max_frags_per_msg]
-    uint8_t *reasm_frag_lens;           // [max_reasm_slots * max_frags_per_msg]
+typedef struct {
+    uint8_t node_id;
+    uint16_t frag_size;
+    uint16_t max_payload;
+    uint8_t max_frags_per_msg;
+    uint8_t default_ttl;
+
+    route_reasm_config_t reasm;
+    route_reliability_config_t reliability;
 
     // Memory pool
-    uint8_t **pool_free_list;
+    uint32_t *pool_bitmap;              // [(pool_block_count + 31) / 32]
     uint8_t *pool_storage;
     uint8_t pool_block_count;
 

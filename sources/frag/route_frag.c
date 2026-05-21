@@ -6,45 +6,46 @@
 int route_frag_init(route_frag_ctx_t *ctx, const route_frag_config_t *cfg) {
     if (ctx == NULL || cfg == NULL) return ROUTE_ERR_PARAM;
     if (cfg->frag_size == 0 || cfg->max_payload == 0) return ROUTE_ERR_PARAM;
-    if (cfg->max_frags_per_msg == 0 || cfg->max_reasm_slots == 0) return ROUTE_ERR_PARAM;
-    if (cfg->reasm_slots == NULL || cfg->reasm_buf == NULL) return ROUTE_ERR_PARAM;
-    if (cfg->reasm_frag_ptrs == NULL || cfg->reasm_frag_lens == NULL) return ROUTE_ERR_PARAM;
-    if (cfg->pool_free_list == NULL || cfg->pool_storage == NULL) return ROUTE_ERR_PARAM;
+    if (cfg->max_frags_per_msg == 0 || cfg->reasm.max_slots == 0) return ROUTE_ERR_PARAM;
+    if (cfg->reasm.slots == NULL || cfg->reasm.buf == NULL) return ROUTE_ERR_PARAM;
+    if (cfg->reasm.frag_ptrs == NULL || cfg->reasm.frag_lens == NULL) return ROUTE_ERR_PARAM;
+    if (cfg->pool_bitmap == NULL || cfg->pool_storage == NULL) return ROUTE_ERR_PARAM;
 
     memset(ctx, 0, sizeof(*ctx));
     ctx->node_id = cfg->node_id;
     ctx->cfg_frag_size = cfg->frag_size;
     ctx->cfg_max_payload = cfg->max_payload;
     ctx->cfg_max_frags_per_msg = cfg->max_frags_per_msg;
-    ctx->cfg_max_reasm_slots = cfg->max_reasm_slots;
-    ctx->cfg_reasm_timeout_ms = cfg->reasm_timeout_ms;
+    ctx->cfg_max_reasm_slots = cfg->reasm.max_slots;
+    ctx->cfg_reasm_timeout_ms = cfg->reasm.timeout_ms;
     ctx->cfg_default_ttl = cfg->default_ttl;
-    ctx->reasm_slots = cfg->reasm_slots;
-    ctx->reasm_buf = cfg->reasm_buf;
+    ctx->reasm_slots = cfg->reasm.slots;
+    ctx->reasm_buf = cfg->reasm.buf;
     ctx->stats = cfg->stats;
 
     // Init reassembly slots
-    for (uint8_t i = 0; i < cfg->max_reasm_slots; i++) {
+    for (uint8_t i = 0; i < cfg->reasm.max_slots; i++) {
         ctx->reasm_slots[i].active = 0;
-        ctx->reasm_slots[i].fragments = &cfg->reasm_frag_ptrs[i * cfg->max_frags_per_msg];
-        ctx->reasm_slots[i].frag_lens = &cfg->reasm_frag_lens[i * cfg->max_frags_per_msg];
+        ctx->reasm_slots[i].fragments = &cfg->reasm.frag_ptrs[i * cfg->max_frags_per_msg];
+        ctx->reasm_slots[i].frag_lens = &cfg->reasm.frag_lens[i * cfg->max_frags_per_msg];
     }
 
     // Init pool
     uint16_t block_size = ROUTE_HEADER_SIZE + cfg->frag_size;
-    route_pool_init(&ctx->pool, cfg->pool_free_list, cfg->pool_storage,
+    route_pool_init(&ctx->pool, cfg->pool_storage, cfg->pool_bitmap,
                     cfg->pool_block_count, block_size);
 
     // Reliability (optional)
-    if (cfg->max_pending_acks > 0 && cfg->pending_acks != NULL && cfg->pending_ack_data != NULL) {
+    const route_reliability_config_t *rel = &cfg->reliability;
+    if (rel->max_pending_acks > 0 && rel->pending_acks != NULL && rel->pending_ack_data != NULL) {
         ctx->reliability_enabled = 1;
-        ctx->pending_acks = cfg->pending_acks;
-        ctx->cfg_max_pending_acks = cfg->max_pending_acks;
-        ctx->cfg_ack_timeout_ms = cfg->ack_timeout_ms;
-        ctx->cfg_ack_retry_max = cfg->ack_retry_max;
-        for (uint8_t i = 0; i < cfg->max_pending_acks; i++) {
+        ctx->pending_acks = rel->pending_acks;
+        ctx->cfg_max_pending_acks = rel->max_pending_acks;
+        ctx->cfg_ack_timeout_ms = rel->ack_timeout_ms;
+        ctx->cfg_ack_retry_max = rel->ack_retry_max;
+        for (uint8_t i = 0; i < rel->max_pending_acks; i++) {
             ctx->pending_acks[i].active = 0;
-            ctx->pending_acks[i].data = &cfg->pending_ack_data[i * cfg->frag_size];
+            ctx->pending_acks[i].data = &rel->pending_ack_data[i * cfg->frag_size];
         }
     }
 
@@ -298,7 +299,10 @@ int route_frag_send(route_frag_ctx_t *ctx, uint8_t dest, uint8_t trans_id,
         if (ctx->stats) { ctx->stats->tx_packets++; ctx->stats->tx_bytes += ROUTE_HEADER_SIZE + chunk; }
 
         // 注册 reliability 跟踪
-        reliability_register(ctx, dest, seq, i, frag_total, type, trans_id, &data[offset], chunk);
+        int rel_rc = reliability_register(ctx, dest, seq, i, frag_total, type, trans_id, &data[offset], chunk);
+        if (rel_rc == ROUTE_ERR_FULL && ctx->stats) {
+            ctx->stats->drop_no_mem++;  // reliability 降级：无法跟踪重传
+        }
     }
     return ROUTE_OK;
 }
