@@ -316,15 +316,23 @@ int route_frag_send(route_frag_ctx_t *ctx, uint8_t dest, uint8_t trans_id,
 
         const uint8_t *chunk_ptr = (data != NULL && chunk > 0) ? &data[offset] : NULL;
 
-        int rc = ctx->lower_send(ctx->lower_send_ctx, &hdr, chunk_ptr, chunk);
-        if (rc != ROUTE_OK) return rc;
-
-        // 注册 reliability 跟踪（需要锁保护 pending_acks）
+        // 先注册 reliability 跟踪，再发送；避免 ACK 在注册前到达被丢弃
         frag_lock(ctx);
         int rel_rc = reliability_register(ctx, dest, seq, i, frag_total, type, trans_id, chunk_ptr, chunk);
         frag_unlock(ctx);
         if (rel_rc == ROUTE_ERR_FULL && ctx->stats) {
             ctx->stats->drop_no_mem++;
+        }
+
+        int rc = ctx->lower_send(ctx->lower_send_ctx, &hdr, chunk_ptr, chunk);
+        if (rc != ROUTE_OK) {
+            // 发送失败，取消已注册的 reliability 条目
+            if (rel_rc == ROUTE_OK) {
+                frag_lock(ctx);
+                reliability_on_ack(ctx, dest, seq, i);
+                frag_unlock(ctx);
+            }
+            return rc;
         }
     }
     return ROUTE_OK;
