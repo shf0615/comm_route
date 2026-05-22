@@ -42,6 +42,7 @@ static int stack_trans_to_frag(void *ctx, uint8_t dest, uint8_t trans_id,
         return route_frag_send(stack->frag, dest, trans_id, seq, type, data, len);
     }
     // 无 frag 层，直接构建单帧发 router
+    if (len > route_router_get_frag_size(stack->router)) return ROUTE_ERR_PARAM;
     route_header_t hdr = {
         .src = stack->node_id,
         .dst = dest,
