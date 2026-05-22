@@ -4,19 +4,15 @@
 #include "../common/route_types.h"
 #include "../common/route_queue.h"
 
-// ============ Codec (可替换帧编解码) ============
-
 typedef struct {
-    // 编码帧，返回 frame 总长度
+    
     uint16_t (*encode)(const route_header_t *hdr, const uint8_t *payload,
                        uint16_t payload_len, uint8_t *frame);
-    // 解码帧，成功返回 ROUTE_OK
+    
     int (*decode)(const uint8_t *frame, uint16_t frame_len,
                   route_header_t *hdr, const uint8_t **payload, uint16_t *payload_len);
-    uint16_t overhead;  // header + checksum 字节数
+    uint16_t overhead;  
 } route_codec_t;
-
-// ============ Seen Entry (转发去重) ============
 
 typedef struct {
     uint8_t src_id;
@@ -25,52 +21,48 @@ typedef struct {
     uint32_t timestamp_ms;
 } route_seen_entry_t;
 
-// ============ Router Config ============
-
 typedef struct {
     uint8_t node_id;
     uint8_t default_ttl;
-    uint16_t frag_size;         // 用于计算 block_size
+    uint16_t frag_size;         
 
-    // 可选 codec（NULL = 使用内置默认）
+    
     const route_codec_t *codec;
 
-    // 容量
+    
     uint8_t max_ports;
     uint8_t max_nodes;
     uint8_t seen_table_size;
     uint32_t seen_expire_ms;
     uint8_t recv_queue_size;
 
-    // 外部存储
+    
     route_port_t *ports;
     route_entry_t *route_table;
     route_seen_entry_t *seen_table;
 
-    // 接收队列存储
+    
     uint8_t *recv_queue_data;
     uint16_t *recv_queue_lengths;
     uint8_t *recv_queue_from_port;
 
-    // 工作缓冲区（消除栈上 VLA）
-    uint8_t *send_frame_buf;    // [overhead + frag_size]，route_router_send 专用
-    uint8_t *fwd_frame_buf;     // [overhead + frag_size]，poll 转发编码用
-    uint8_t *rx_frame_buf;      // [overhead + frag_size]，poll 取帧用
+    
+    uint8_t *send_frame_buf;    
+    uint8_t *fwd_frame_buf;     
+    uint8_t *rx_frame_buf;      
 
-    route_stats_t *stats;       // 共享统计（NULL = 不统计）
+    route_stats_t *stats;       
 
-    // 可选队列锁（用于多写者 ISR 安全，NULL = 无锁）
+    
     void (*queue_lock)(void *lock_ctx);
     void (*queue_unlock)(void *lock_ctx);
     void *queue_lock_ctx;
 } route_router_config_t;
 
-// ============ Router Context ============
-
 typedef struct {
     uint8_t node_id;
     uint8_t cfg_default_ttl;
-    uint16_t cfg_block_size;    // overhead + frag_size
+    uint16_t cfg_block_size;    
     uint16_t cfg_frag_size;
 
     route_port_t *ports;
@@ -89,27 +81,25 @@ typedef struct {
 
     route_recv_queue_t recv_queue;
 
-    // 工作缓冲区
-    uint8_t *send_frame_buf;    // send 专用
-    uint8_t *fwd_frame_buf;     // poll 转发专用
-    uint8_t *rx_frame_buf;      // poll 取帧用
+    
+    uint8_t *send_frame_buf;    
+    uint8_t *fwd_frame_buf;     
+    uint8_t *rx_frame_buf;      
 
     const route_codec_t *codec;
 
-    // 上行回调：帧送达本机时调用
+    
     void (*deliver_cb)(void *ctx, const route_header_t *hdr,
                        const uint8_t *payload, uint16_t payload_len);
     void *deliver_ctx;
 
     route_stats_t *stats;
 
-    // 可选队列锁
+    
     void (*queue_lock)(void *lock_ctx);
     void (*queue_unlock)(void *lock_ctx);
     void *queue_lock_ctx;
 } route_router_ctx_t;
-
-// ============ API ============
 
 int route_router_init(route_router_ctx_t *ctx, const route_router_config_t *cfg);
 void route_router_deinit(route_router_ctx_t *ctx);
@@ -124,16 +114,13 @@ void route_router_set_deliver_cb(route_router_ctx_t *ctx,
 int route_router_send(route_router_ctx_t *ctx, const route_header_t *hdr,
                       const uint8_t *payload, uint16_t payload_len);
 
-// 输入一帧原始数据（从 ISR 或接收线程调用）
 int route_router_input(route_router_ctx_t *ctx, const uint8_t *data, uint16_t len, uint8_t port_id);
 
-// 处理接收队列（在主循环中调用）
 void route_router_poll(route_router_ctx_t *ctx);
 
-// 更新时间（驱动 seen_table 过期）
 void route_router_tick(route_router_ctx_t *ctx, uint32_t now_ms);
 
 static inline uint8_t route_router_get_default_ttl(const route_router_ctx_t *ctx) { return ctx->cfg_default_ttl; }
 static inline uint16_t route_router_get_frag_size(const route_router_ctx_t *ctx) { return ctx->cfg_frag_size; }
 
-#endif // ROUTE_ROUTER_H
+#endif 

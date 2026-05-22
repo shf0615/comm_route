@@ -1,8 +1,6 @@
 #include "route_frag.h"
 #include <string.h>
 
-// ============ Lock helpers ============
-
 static inline void frag_lock(route_frag_ctx_t *ctx) {
     if (ctx->lock) ctx->lock(ctx->lock_ctx);
 }
@@ -10,8 +8,6 @@ static inline void frag_lock(route_frag_ctx_t *ctx) {
 static inline void frag_unlock(route_frag_ctx_t *ctx) {
     if (ctx->unlock) ctx->unlock(ctx->lock_ctx);
 }
-
-// ============ Init ============
 
 int route_frag_init(route_frag_ctx_t *ctx, const route_frag_config_t *cfg) {
     if (ctx == NULL || cfg == NULL) return ROUTE_ERR_PARAM;
@@ -33,19 +29,19 @@ int route_frag_init(route_frag_ctx_t *ctx, const route_frag_config_t *cfg) {
     ctx->reasm_buf = cfg->reasm.buf;
     ctx->stats = cfg->stats;
 
-    // Init reassembly slots
+    
     for (uint8_t i = 0; i < cfg->reasm.max_slots; i++) {
         ctx->reasm_slots[i].active = 0;
         ctx->reasm_slots[i].fragments = &cfg->reasm.frag_ptrs[i * cfg->max_frags_per_msg];
         ctx->reasm_slots[i].frag_lens = &cfg->reasm.frag_lens[i * cfg->max_frags_per_msg];
     }
 
-    // Init pool
+    
     uint16_t block_size = ROUTE_HEADER_SIZE + cfg->frag_size;
     route_pool_init(&ctx->pool, cfg->pool_storage, cfg->pool_bitmap,
                     cfg->pool_block_count, block_size);
 
-    // Reliability (optional)
+    
     const route_reliability_config_t *rel = &cfg->reliability;
     if (rel->max_pending_acks > 0 && rel->pending_acks != NULL && rel->pending_ack_data != NULL) {
         ctx->reliability_enabled = 1;
@@ -59,7 +55,7 @@ int route_frag_init(route_frag_ctx_t *ctx, const route_frag_config_t *cfg) {
         }
     }
 
-    // Optional lock
+    
     ctx->lock = cfg->lock;
     ctx->unlock = cfg->unlock;
     ctx->lock_ctx = cfg->lock_ctx;
@@ -69,7 +65,7 @@ int route_frag_init(route_frag_ctx_t *ctx, const route_frag_config_t *cfg) {
 
 void route_frag_deinit(route_frag_ctx_t *ctx) {
     if (ctx == NULL) return;
-    // Free pool blocks held by active reasm slots
+    
     for (uint8_t i = 0; i < ctx->cfg_max_reasm_slots; i++) {
         if (ctx->reasm_slots[i].active) {
             for (uint8_t j = 0; j < ctx->reasm_slots[i].frag_total; j++) {
@@ -82,8 +78,6 @@ void route_frag_deinit(route_frag_ctx_t *ctx) {
         }
     }
 }
-
-// ============ Callbacks ============
 
 void route_frag_set_lower_send(route_frag_ctx_t *ctx,
     int (*send)(void *c, const route_header_t *hdr, const uint8_t *payload, uint16_t len),
@@ -98,8 +92,6 @@ void route_frag_set_complete_cb(route_frag_ctx_t *ctx,
     ctx->complete_cb = cb;
     ctx->complete_ctx = cb_ctx;
 }
-
-// ============ Reliability Internal ============
 
 static int reliability_register(route_frag_ctx_t *ctx, uint8_t dest, uint8_t seq,
                                 uint8_t frag_idx, uint8_t frag_total, uint8_t type,
@@ -168,7 +160,7 @@ static void reliability_tick(route_frag_ctx_t *ctx, uint32_t now_ms) {
             pa->active = 0;
             continue;
         }
-        // Retransmit
+        
         if (ctx->lower_send) {
             route_header_t hdr = {
                 .src = ctx->node_id,
@@ -188,8 +180,6 @@ static void reliability_tick(route_frag_ctx_t *ctx, uint32_t now_ms) {
         pa->next_retry_ms = now_ms + ctx->cfg_ack_timeout_ms * (1u << shift);
     }
 }
-
-// ============ Reassembly Internal ============
 
 static route_reasm_ctx_t *find_reasm_slot(route_frag_ctx_t *ctx, uint8_t src_id, uint8_t seq) {
     for (uint8_t i = 0; i < ctx->cfg_max_reasm_slots; i++) {
@@ -224,7 +214,7 @@ static int frag_reassemble(route_frag_ctx_t *ctx, const route_header_t *hdr,
                            uint8_t *out_buf, uint16_t *out_len, route_header_t *out_hdr) {
     if (hdr->frag_total == 0 || hdr->frag_total > ctx->cfg_max_frags_per_msg) return ROUTE_ERR_PARAM;
 
-    // 单帧：直接返回
+    
     if (hdr->frag_total == 1) {
         if (payload_len > ctx->cfg_max_payload) return ROUTE_ERR_PARAM;
         if (payload_len > 0) {
@@ -255,7 +245,7 @@ static int frag_reassemble(route_frag_ctx_t *ctx, const route_header_t *hdr,
 
     if (hdr->frag_idx >= slot->frag_total) return ROUTE_ERR_PARAM;
     if (payload_len > ctx->cfg_frag_size) return ROUTE_ERR_PARAM;
-    if (slot->fragments[hdr->frag_idx] != NULL) return 0;  // duplicate fragment
+    if (slot->fragments[hdr->frag_idx] != NULL) return 0;  
 
     uint8_t *blk = route_pool_alloc(&ctx->pool);
     if (blk == NULL) {
@@ -287,8 +277,6 @@ static int frag_reassemble(route_frag_ctx_t *ctx, const route_header_t *hdr,
     return 0;
 }
 
-// ============ Public API ============
-
 int route_frag_send(route_frag_ctx_t *ctx, uint8_t dest, uint8_t trans_id,
                     uint8_t seq, route_frame_type_t type,
                     const uint8_t *data, uint16_t len) {
@@ -316,7 +304,7 @@ int route_frag_send(route_frag_ctx_t *ctx, uint8_t dest, uint8_t trans_id,
 
         const uint8_t *chunk_ptr = (data != NULL && chunk > 0) ? &data[offset] : NULL;
 
-        // 先注册 reliability 跟踪，再发送；避免 ACK 在注册前到达被丢弃
+        
         frag_lock(ctx);
         int rel_rc = reliability_register(ctx, dest, seq, i, frag_total, type, trans_id, chunk_ptr, chunk);
         frag_unlock(ctx);
@@ -326,7 +314,7 @@ int route_frag_send(route_frag_ctx_t *ctx, uint8_t dest, uint8_t trans_id,
 
         int rc = ctx->lower_send(ctx->lower_send_ctx, &hdr, chunk_ptr, chunk);
         if (rc != ROUTE_OK) {
-            // 发送失败，取消已注册的 reliability 条目
+            
             if (rel_rc == ROUTE_OK) {
                 frag_lock(ctx);
                 reliability_on_ack(ctx, dest, seq, i);
@@ -340,7 +328,7 @@ int route_frag_send(route_frag_ctx_t *ctx, uint8_t dest, uint8_t trans_id,
 
 void route_frag_input(route_frag_ctx_t *ctx, const route_header_t *hdr,
                       const uint8_t *payload, uint16_t payload_len) {
-    // ACK 帧 → 清除对应 pending_ack
+    
     if (hdr->type == ROUTE_TYPE_ACK) {
         frag_lock(ctx);
         reliability_on_ack(ctx, hdr->src, hdr->seq, hdr->frag_idx);
@@ -348,12 +336,12 @@ void route_frag_input(route_frag_ctx_t *ctx, const route_header_t *hdr,
         return;
     }
 
-    // 数据帧 → 逐片发 ACK
+    
     if (ctx->reliability_enabled) {
         reliability_send_ack(ctx, hdr->src, hdr->seq, hdr->frag_idx);
     }
 
-    // 重组
+    
     frag_lock(ctx);
     uint16_t reasm_len = 0;
     route_header_t reasm_hdr;
@@ -370,7 +358,7 @@ void route_frag_tick(route_frag_ctx_t *ctx, uint32_t now_ms) {
     ctx->current_ms = now_ms;
 
     frag_lock(ctx);
-    // Reassembly timeout
+    
     for (uint8_t i = 0; i < ctx->cfg_max_reasm_slots; i++) {
         if (ctx->reasm_slots[i].active) {
             if ((int32_t)(now_ms - ctx->reasm_slots[i].start_ms) >= (int32_t)ctx->cfg_reasm_timeout_ms) {
@@ -379,7 +367,7 @@ void route_frag_tick(route_frag_ctx_t *ctx, uint32_t now_ms) {
             }
         }
     }
-    // Reliability retransmit timeout
+    
     reliability_tick(ctx, now_ms);
     frag_unlock(ctx);
 }

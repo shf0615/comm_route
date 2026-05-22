@@ -4,12 +4,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
-// ============ Constants ============
-
 #define ROUTE_BROADCAST_ADDR    0xFF
 #define ROUTE_HEADER_SIZE       10
-
-// ============ Error Codes ============
 
 enum {
     ROUTE_OK             =  0,
@@ -23,15 +19,11 @@ enum {
     ROUTE_ERR_CRC        = -8,
 };
 
-// ============ Frame Types ============
-
 typedef enum {
     ROUTE_TYPE_REQUEST  = 0,
     ROUTE_TYPE_RESPONSE = 1,
     ROUTE_TYPE_ACK      = 2,
 } route_frame_type_t;
-
-// ============ Frame Header ============
 
 typedef struct {
     uint8_t src;
@@ -44,22 +36,16 @@ typedef struct {
     uint8_t frag_total;
 } route_header_t;
 
-// ============ Port ============
-
 typedef struct {
     uint8_t port_id;
     int (*send)(uint8_t port_id, const uint8_t *buf, uint16_t len);
     void *ctx;
 } route_port_t;
 
-// ============ Route Table Entry ============
-
 typedef struct {
     uint8_t dest_id;
     uint8_t port_id;
 } route_entry_t;
-
-// ============ Statistics ============
 
 typedef struct {
     uint32_t tx_packets;
@@ -77,4 +63,4 @@ typedef struct {
     uint32_t trans_timeouts;
 } route_stats_t;
 
-#endif // ROUTE_TYPES_H
+#endif 

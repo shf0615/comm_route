@@ -4,12 +4,6 @@
 #include "../common/route_types.h"
 #include "../common/route_os.h"
 
-// ============ Transaction State ============
-//
-// 注意：线上帧中的 trans_id 字段实际是发送方的本地 slot index。
-// 对端回复时必须原样回传 trans_id，以便发送方通过 trans_table[trans_id]
-// 定位对应事务。这不是全局唯一事务标识符。
-
 typedef enum {
     TRANS_STATE_IDLE = 0,
     TRANS_STATE_SENDING,
@@ -31,16 +25,14 @@ typedef struct {
     uint16_t resp_max_len;
 } transaction_t;
 
-// ============ Transaction Config ============
-
 typedef struct {
     uint8_t max_concurrent_trans;
     uint32_t default_timeout_ms;
-    const route_os_t *os;           // 需要 sync 时必须提供
+    const route_os_t *os;           
 
-    transaction_t *trans_table;     // [max_concurrent_trans]
+    transaction_t *trans_table;     
 
-    // 下行发送（对接 frag 或 router）
+    
     int (*lower_send)(void *ctx, uint8_t dest, uint8_t trans_id,
                       uint8_t seq, route_frame_type_t type,
                       const uint8_t *data, uint16_t len);
@@ -48,8 +40,6 @@ typedef struct {
 
     route_stats_t *stats;
 } route_transaction_config_t;
-
-// ============ Transaction Context ============
 
 typedef struct {
     uint8_t cfg_max_concurrent_trans;
@@ -69,8 +59,6 @@ typedef struct {
     route_stats_t *stats;
 } route_transaction_ctx_t;
 
-// ============ API ============
-
 int route_transaction_init(route_transaction_ctx_t *ctx, const route_transaction_config_t *cfg);
 void route_transaction_deinit(route_transaction_ctx_t *ctx);
 
@@ -86,11 +74,10 @@ int route_transaction_send_async(route_transaction_ctx_t *ctx, uint8_t dest,
 int route_transaction_reply(route_transaction_ctx_t *ctx, uint8_t dest, uint8_t trans_id,
                             const uint8_t *data, uint16_t len);
 
-// 从 frag complete_cb 调用
 void route_transaction_on_response(route_transaction_ctx_t *ctx, uint8_t src,
                                    uint8_t trans_id, uint8_t seq,
                                    const uint8_t *data, uint16_t len);
 
 void route_transaction_tick(route_transaction_ctx_t *ctx, uint32_t now_ms);
 
-#endif // ROUTE_TRANSACTION_H
+#endif 

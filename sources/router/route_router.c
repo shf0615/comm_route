@@ -1,16 +1,7 @@
-/**
- * 线程模型说明：
- * - route_router_input: 可从 ISR 或任意线程调用（内部有 queue_lock 保护）
- * - route_router_poll / route_router_send: 必须在同一线程（主循环）调用，
- *   因为它们共享 send_frame_buf / fwd_frame_buf / rx_frame_buf
- * - route_router_tick: 仅写 current_ms（volatile），可从定时器线程调用
- * - stats 字段为非原子累加，多线程下可能丢失少量计数（诊断用途可接受）
- */
+
 #include "route_router.h"
 #include "../common/route_crc.h"
 #include <string.h>
-
-// ============ 内置默认 Codec ============
 
 static uint16_t default_encode(const route_header_t *hdr, const uint8_t *payload,
                                uint16_t payload_len, uint8_t *frame) {
@@ -57,8 +48,6 @@ static const route_codec_t default_codec = {
     .overhead = ROUTE_HEADER_SIZE,
 };
 
-// ============ Init / Deinit ============
-
 int route_router_init(route_router_ctx_t *ctx, const route_router_config_t *cfg) {
     if (ctx == NULL || cfg == NULL) return ROUTE_ERR_PARAM;
     if (cfg->max_ports == 0 || cfg->ports == NULL) return ROUTE_ERR_PARAM;
@@ -101,8 +90,6 @@ void route_router_deinit(route_router_ctx_t *ctx) {
     (void)ctx;
 }
 
-// ============ Configuration ============
-
 int route_router_port_register(route_router_ctx_t *ctx, const route_port_t *port) {
     if (ctx->port_count >= ctx->cfg_max_ports) return ROUTE_ERR_FULL;
     ctx->ports[ctx->port_count] = *port;
@@ -124,8 +111,6 @@ void route_router_set_deliver_cb(route_router_ctx_t *ctx,
     ctx->deliver_ctx = cb_ctx;
 }
 
-// ============ Internal ============
-
 static const route_entry_t *router_lookup(route_router_ctx_t *ctx, uint8_t dest_id) {
     for (uint8_t i = 0; i < ctx->route_count; i++) {
         if (ctx->route_table[i].dest_id == dest_id) {
@@ -145,7 +130,6 @@ static int router_send_to_port(route_router_ctx_t *ctx, uint8_t port_id,
     return ROUTE_ERR_NO_PORT;
 }
 
-// 转发去重：仅记录需要转发的广播帧（防止广播风暴）
 static int router_seen_check_and_add(route_router_ctx_t *ctx, uint8_t src_id, uint8_t seq) {
     uint32_t now = ctx->current_ms;
     for (uint8_t i = 0; i < ctx->cfg_seen_table_size; i++) {
@@ -155,10 +139,10 @@ static int router_seen_check_and_add(route_router_ctx_t *ctx, uint8_t src_id, ui
             continue;
         }
         if (ctx->seen_table[i].src_id == src_id && ctx->seen_table[i].seq == seq) {
-            return 1;  // duplicate
+            return 1;  
         }
     }
-    // 写入策略：优先使用无效槽；若全部有效则 FIFO 覆盖 seen_index 指向的最旧条目
+    
     uint8_t write_idx = ctx->seen_index;
     for (uint8_t i = 0; i < ctx->cfg_seen_table_size; i++) {
         if (!ctx->seen_table[i].valid) {
@@ -193,14 +177,14 @@ static int router_handle_frame(route_router_ctx_t *ctx, const uint8_t *frame,
         return ROUTE_ERR_TIMEOUT;
     }
 
-    // 广播帧
+    
     if (hdr.dst == ROUTE_BROADCAST_ADDR) {
-        // 转发去重
+        
         if (router_seen_check_and_add(ctx, hdr.src, hdr.seq)) {
             if (ctx->stats) ctx->stats->drop_duplicate++;
             return 0;
         }
-        // 转发到其他端口（仅在 ttl > 1 时，ttl=1 的帧不应再转发）
+        
         if (hdr.ttl > 1) {
             hdr.ttl--;
             uint16_t fwd_len = ctx->codec->encode(&hdr, payload, payload_len, ctx->fwd_frame_buf);
@@ -211,7 +195,7 @@ static int router_handle_frame(route_router_ctx_t *ctx, const uint8_t *frame,
                     }
                 }
             }
-            hdr.ttl++;  // 恢复原始 ttl 用于本机送达
+            hdr.ttl++;  
         }
         if (ctx->stats) { ctx->stats->rx_packets++; ctx->stats->rx_bytes += ROUTE_HEADER_SIZE + payload_len; }
         if (ctx->deliver_cb) {
@@ -220,7 +204,7 @@ static int router_handle_frame(route_router_ctx_t *ctx, const uint8_t *frame,
         return 1;
     }
 
-    // 送达本机
+    
     if (hdr.dst == ctx->node_id) {
         if (ctx->stats) { ctx->stats->rx_packets++; ctx->stats->rx_bytes += ROUTE_HEADER_SIZE + payload_len; }
         if (ctx->deliver_cb) {
@@ -229,7 +213,7 @@ static int router_handle_frame(route_router_ctx_t *ctx, const uint8_t *frame,
         return 1;
     }
 
-    // 转发
+    
     const route_entry_t *entry = router_lookup(ctx, hdr.dst);
     if (entry == NULL) {
         if (ctx->stats) ctx->stats->drop_no_route++;
@@ -245,14 +229,12 @@ static int router_handle_frame(route_router_ctx_t *ctx, const uint8_t *frame,
     return fwd_rc;
 }
 
-// ============ Public API ============
-
 int route_router_send(route_router_ctx_t *ctx, const route_header_t *hdr,
                       const uint8_t *payload, uint16_t payload_len) {
     uint16_t frame_len = ctx->codec->encode(hdr, payload, payload_len, ctx->send_frame_buf);
 
     if (hdr->dst == ROUTE_BROADCAST_ADDR) {
-        // 写入 seen_table 防止本机发的广播帧回环时被再次 deliver
+        
         router_seen_check_and_add(ctx, hdr->src, hdr->seq);
         int last_err = ROUTE_OK;
         for (uint8_t i = 0; i < ctx->port_count; i++) {

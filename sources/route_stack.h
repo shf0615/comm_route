@@ -5,12 +5,10 @@
 #include "frag/route_frag.h"
 #include "transaction/route_transaction.h"
 
-// ============ Stack（仅负责串联已初始化的各层） ============
-
 typedef struct {
     route_router_ctx_t *router;
-    route_frag_ctx_t *frag;                 // 可选，NULL = 无分片
-    route_transaction_ctx_t *transaction;   // 可选，NULL = 无请求-响应
+    route_frag_ctx_t *frag;                 
+    route_transaction_ctx_t *transaction;   
 
     uint8_t node_id;
     uint8_t bcast_seq_counter;
@@ -20,7 +18,6 @@ typedef struct {
     void *on_recv_ctx;
 } route_stack_t;
 
-// 串联各层回调（各层必须已 init 完毕）
 int route_stack_wire(route_stack_t *stack, route_router_ctx_t *router,
                      route_frag_ctx_t *frag, route_transaction_ctx_t *transaction);
 
@@ -47,10 +44,9 @@ int route_stack_broadcast(route_stack_t *stack, const uint8_t *data, uint16_t le
 
 int route_stack_input(route_stack_t *stack, const uint8_t *data, uint16_t len, uint8_t port_id);
 
-// Helper macro: wire stack and set recv callback in one call
 #define ROUTE_STACK_WIRE_AND_CB(stack, router, frag, trans, cb, ctx) do { \
     route_stack_wire(&(stack), (router), (frag), (trans));               \
     route_stack_set_recv_cb(&(stack), (cb), (ctx));                      \
 } while(0)
 
-#endif // ROUTE_STACK_H
+#endif 

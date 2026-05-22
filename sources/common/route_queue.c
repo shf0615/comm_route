@@ -13,13 +13,6 @@ void route_queue_init(route_recv_queue_t *q, uint8_t *data, uint16_t *lengths,
     q->count = 0;
 }
 
-/**
- * route_queue_push - 将数据压入接收队列。
- *
- * 线程安全说明：本函数不包含内部锁保护。
- * 调用者必须在外部持有锁的情况下调用 push，或保证单生产者访问。
- * pop 同理，需在锁保护下调用或保证单消费者访问。
- */
 int route_queue_push(route_recv_queue_t *q, const uint8_t *data, uint16_t len, uint8_t from_port) {
     if (q->count >= q->capacity) {
         return -1;

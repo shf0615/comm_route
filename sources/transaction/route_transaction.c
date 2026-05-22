@@ -1,8 +1,6 @@
 #include "route_transaction.h"
 #include <string.h>
 
-// ============ Internal ============
-
 static inline void trans_lock(route_transaction_ctx_t *ctx) {
     if (ctx->os && ctx->mutex) ctx->os->mutex_lock(ctx->mutex);
 }
@@ -17,8 +15,6 @@ static int alloc_transaction(route_transaction_ctx_t *ctx) {
     }
     return -1;
 }
-
-// ============ Init / Deinit ============
 
 int route_transaction_init(route_transaction_ctx_t *ctx, const route_transaction_config_t *cfg) {
     if (ctx == NULL || cfg == NULL) return ROUTE_ERR_PARAM;
@@ -45,10 +41,10 @@ void route_transaction_deinit(route_transaction_ctx_t *ctx) {
     if (ctx == NULL) return;
     ctx->shutdown = 1;
 
-    // 在锁内收集、设状态，锁外通知
+    
     trans_lock(ctx);
-    // 使用 trans_table 本身记录需要通知的信息（state 已设为 IDLE）
-    // 先收集 callback/sem 信息到局部变量（大小由实际 max 决定）
+    
+    
     uint8_t max = ctx->cfg_max_concurrent_trans;
     trans_unlock(ctx);
 
@@ -64,14 +60,14 @@ void route_transaction_deinit(route_transaction_ctx_t *ctx) {
                 ud = t->user_data;
             } else if (t->sync_sem && ctx->os) {
                 t->result = ROUTE_ERR_TIMEOUT;
-                // sem_post 在锁内，防止与 send_sync 超时后 sem_destroy 竞态
+                
                 ctx->os->sem_post(t->sync_sem);
             }
             t->state = TRANS_STATE_IDLE;
         }
         trans_unlock(ctx);
 
-        // 锁外回调（回调可能耗时，不适合锁内）
+        
         if (cb) {
             cb(ROUTE_ERR_TIMEOUT, NULL, 0, ud);
         }
@@ -83,13 +79,11 @@ void route_transaction_deinit(route_transaction_ctx_t *ctx) {
     }
 }
 
-// ============ Send ============
-
 int route_transaction_send_async(route_transaction_ctx_t *ctx, uint8_t dest,
                                  const uint8_t *data, uint16_t len,
                                  void (*cb)(int result, const uint8_t *data, uint16_t len, void *user_data),
                                  void *user_data) {
-    // Pre-fill slot fields before start_transaction sends
+    
     trans_lock(ctx);
     int idx = alloc_transaction(ctx);
     if (idx < 0) { trans_unlock(ctx); return ROUTE_ERR_FULL; }
@@ -105,7 +99,7 @@ int route_transaction_send_async(route_transaction_ctx_t *ctx, uint8_t dest,
     t->expected_seq = seq;
     trans_unlock(ctx);
 
-    // trans_id = slot index, 对端必须原样回传
+    
     int rc = ctx->lower_send ?
         ctx->lower_send(ctx->lower_send_ctx, dest, (uint8_t)idx, seq, ROUTE_TYPE_REQUEST, data, len) :
         ROUTE_ERR_PARAM;
@@ -152,7 +146,7 @@ int route_transaction_send_sync(route_transaction_ctx_t *ctx, uint8_t dest,
     t->expected_seq = seq;
     trans_unlock(ctx);
 
-    // trans_id = slot index, 对端必须原样回传
+    
     int rc = ctx->lower_send ?
         ctx->lower_send(ctx->lower_send_ctx, dest, (uint8_t)idx, seq, ROUTE_TYPE_REQUEST, data, len) :
         ROUTE_ERR_PARAM;
@@ -192,8 +186,6 @@ int route_transaction_reply(route_transaction_ctx_t *ctx, uint8_t dest, uint8_t 
     return ctx->lower_send(ctx->lower_send_ctx, dest, trans_id, seq, ROUTE_TYPE_RESPONSE, data, len);
 }
 
-// ============ Response Handling ============
-
 void route_transaction_on_response(route_transaction_ctx_t *ctx, uint8_t src,
                                    uint8_t trans_id, uint8_t seq,
                                    const uint8_t *data, uint16_t len) {
@@ -221,7 +213,7 @@ void route_transaction_on_response(route_transaction_ctx_t *ctx, uint8_t src,
         if (t->resp_buf && copy_len > 0) memcpy(t->resp_buf, data, copy_len);
         if (t->resp_len) *t->resp_len = copy_len;
         t->result = ROUTE_OK;
-        // sem_post 在锁内执行，防止与 send_sync 超时后 sem_destroy 竞态
+        
         ctx->os->sem_post(t->sync_sem);
         trans_unlock(ctx);
     } else {
@@ -230,13 +222,11 @@ void route_transaction_on_response(route_transaction_ctx_t *ctx, uint8_t src,
     }
 }
 
-// ============ Tick ============
-
 void route_transaction_tick(route_transaction_ctx_t *ctx, uint32_t now_ms) {
     if (ctx->shutdown) return;
 
-    // 收集超时回调，锁外统一通知避免回调死锁；
-    // sem_post 在锁内执行（短操作），防止与 send_sync 超时后 sem_destroy 竞态
+    
+    
 #define TRANS_TICK_MAX_BATCH 32
     void (*timeout_cbs[TRANS_TICK_MAX_BATCH])(int, const uint8_t *, uint16_t, void *);
     void *timeout_uds[TRANS_TICK_MAX_BATCH];
@@ -249,12 +239,12 @@ void route_transaction_tick(route_transaction_ctx_t *ctx, uint32_t now_ms) {
 
         if (t->timeout_ms == 0 && t->timeout_duration > 0) {
             t->timeout_ms = now_ms + t->timeout_duration;
-            if (t->timeout_ms == 0) t->timeout_ms = 1;  // 避免与哨兵值冲突
+            if (t->timeout_ms == 0) t->timeout_ms = 1;  
             continue;
         }
         if (t->timeout_ms == 0 || (int32_t)(now_ms - t->timeout_ms) < 0) continue;
 
-        // Timeout
+        
         if (ctx->stats) ctx->stats->trans_timeouts++;
 
         if (t->callback) {
@@ -264,10 +254,10 @@ void route_transaction_tick(route_transaction_ctx_t *ctx, uint32_t now_ms) {
                 timeout_count++;
                 t->state = TRANS_STATE_IDLE;
             }
-            // else: batch full, leave in WAITING for next tick
+            
         } else if (t->sync_sem) {
             t->result = ROUTE_ERR_TIMEOUT;
-            // sem_post 在锁内，确保 send_sync 的 sem_destroy 与此序列化
+            
             ctx->os->sem_post(t->sync_sem);
             t->state = TRANS_STATE_IDLE;
         } else {
@@ -276,7 +266,7 @@ void route_transaction_tick(route_transaction_ctx_t *ctx, uint32_t now_ms) {
     }
     trans_unlock(ctx);
 
-    // 锁外回调（回调可能耗时长，不适合在锁内执行）
+    
     for (uint8_t i = 0; i < timeout_count; i++) {
         timeout_cbs[i](ROUTE_ERR_TIMEOUT, NULL, 0, timeout_uds[i]);
     }
