@@ -281,6 +281,7 @@ int route_frag_send(route_frag_ctx_t *ctx, uint8_t dest, uint8_t trans_id,
                     uint8_t seq, route_frame_type_t type,
                     const uint8_t *data, uint16_t len) {
     if (ctx->lower_send == NULL) return ROUTE_ERR_PARAM;
+    if (len > ctx->cfg_max_payload) return ROUTE_ERR_PARAM;
 
     uint16_t frag_total_u16 = (len == 0) ? 1 : (len + ctx->cfg_frag_size - 1) / ctx->cfg_frag_size;
     if (frag_total_u16 > ctx->cfg_max_frags_per_msg) return ROUTE_ERR_PARAM;
